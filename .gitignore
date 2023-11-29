@@ -1,0 +1,10 @@
+previous/
+node_modules/
+dist/
+.DS_Store
+.vscode/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+utils/coverage
