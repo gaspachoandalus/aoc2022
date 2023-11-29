@@ -1,7 +1,7 @@
 {
     "compilerOptions": {
         "module": "NodeNext",
-        "moduleResolution": "Node16",
+        "moduleResolution": "Node",
         "target": "ESNext",
         "lib": [
             "ESNext",
@@ -9,7 +9,7 @@
             "ESNext.Array",
             "ES2019.Array"
         ],
-        "esModuleInterop": true,
+        // "esModuleInterop": true,
         "sourceMap": true,
         "inlineSources": true,
         "outDir": "dist",

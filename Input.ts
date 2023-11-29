@@ -5,7 +5,7 @@ export class Input {
             const fs = await import("fs/promises");
             const path = await import("path");
             const url = await import("url");
-            const filename = url.fileURLToPath(import.meta.url);
+            // const filename = url.fileURLToPath(import.meta.url);
             // var scriptNumber = path.basename(filename).split('.').slice(0, -1).join('.').match(/\d+/);
             const buffer = await fs.readFile(moduleName + ".in");
             return buffer.toString("utf-8").split("\n");

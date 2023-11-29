@@ -4,15 +4,6 @@ import * as url from 'url';
 import { Vector, moves, distance, vectorAsString, mod, display, sleep } from "./utils/vector.js";
 import { Terminal } from "./utils/DisplayTerminal2D.js";
 
-class Input {
-    static async ReadLines(): Promise<string[]> {
-        const filename = url.fileURLToPath(import.meta.url);
-        var scriptNumber = path.basename(filename).split('.').slice(0, -1).join('.').match(/\d+/);
-        const buffer = await fs.readFile(process.argv[2] || scriptNumber + ".in");
-        return buffer.toString("utf-8").split("\n");
-    }
-}
-
 const MIN_COORDS = 0;
 const MAX_COORDS = 4_000_000
 const ROW_TO_CHECK = 2_000_000
@@ -283,7 +274,3 @@ export class AOC {
         return `${pos.x},${pos.y}`;
     }
 }
-
-const lines = await Input.ReadLines();
-const status = await AOC.Run(lines);
-console.log(status);

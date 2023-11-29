@@ -2,16 +2,6 @@ import * as fs from "fs/promises"
 import * as path from "path";
 import * as url from 'url';
 
-class Input {
-    static async ReadLines(): Promise<string[]>
-    {
-        const filename = url.fileURLToPath(import.meta.url);
-        var scriptName = path.basename(filename).split('.').slice(0, -1).join('.');
-        const buffer = await fs.readFile(process.argv[2] || scriptName + ".in");
-        return buffer.toString("utf-8").split("\n");
-    }
-}
-
 export type Status = {
     part1: string;
 }
@@ -102,7 +92,3 @@ export class Problem {
         return value;
     }
 }
-
-const lines = await Input.ReadLines();
-const status = Problem.Run(lines);
-console.log(status);

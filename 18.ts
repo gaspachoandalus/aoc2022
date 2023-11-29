@@ -2,25 +2,6 @@ import { WebDisplay3D } from "./utils/DisplayWeb3D.js";
 import { Colors } from "./utils/Display3D.js";
 import { Vector3D, moves3D, vector3DAsString } from "./utils/vector.js";
 
-// import { Colors, Terminal } from "./terminal.js";
-
-class Input {
-    static async ReadLines(): Promise<string[]> {
-        if (typeof window === 'undefined') {
-            const fs = await import("fs/promises");
-            const path = await import("path");
-            const url = await import("url");
-            const filename = url.fileURLToPath(import.meta.url);
-            var scriptNumber = path.basename(filename).split('.').slice(0, -1).join('.').match(/\d+/);
-            const buffer = await fs.readFile(process.argv[2] || scriptNumber + ".in");
-            return buffer.toString("utf-8").split("\n");
-        }
-        else {
-            return (await (await fetch("./18.in")).text()).split("\n");
-        }
-    }
-}
-
 export type Status = {
     part1: number;
     part2: number;
@@ -220,7 +201,3 @@ export class Problem {
         return { viewed, onBoundary, surface };
     }
 }
-
-const lines = await Input.ReadLines();
-const status = await Problem.Run(lines);
-display3D.log(JSON.stringify(status));

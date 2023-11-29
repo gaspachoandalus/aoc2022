@@ -5,7 +5,7 @@ import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { FirstPersonControls } from 'three/examples/jsm/controls/FirstPersonControls.js';
 import { FlyControls } from 'three/examples/jsm/controls/FlyControls.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 import { VertexNormalsHelper } from 'three/examples/jsm/helpers/VertexNormalsHelper.js';
 import Stats from 'three/examples/jsm/libs/stats.module.js';
 import { CSG, Vector } from './CSGMesh.js'; // https://sbcode.net/threejs/csg/

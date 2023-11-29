@@ -2,16 +2,6 @@ import * as fs from "fs/promises"
 import * as path from "path";
 import * as url from 'url';
 
-class Input {
-    static async Read(): Promise<string[]>
-    {
-        const filename = url.fileURLToPath(import.meta.url);
-        var scriptName = path.basename(filename).split('.').slice(0, -1).join('.');
-        const buffer = await fs.readFile(process.argv[2] || scriptName + ".in");
-        return buffer.toString("utf-8").split("\n");
-    }
-}
-
 const enum Shapes {
     Rock = 0,
     Paper = 1,
@@ -106,8 +96,3 @@ class AOC
         }
     }
 }
-
-const lines = await Input.Read();
-const status = AOC.Run(lines);
-
-console.log(status);
