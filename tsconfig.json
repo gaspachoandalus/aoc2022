@@ -1,0 +1,33 @@
+{
+    "compilerOptions": {
+        "module": "NodeNext",
+        "moduleResolution": "Node16",
+        "target": "ESNext",
+        "lib": [
+            "ESNext",
+            "DOM",
+            "ESNext.Array",
+            "ES2019.Array"
+        ],
+        "esModuleInterop": true,
+        "sourceMap": true,
+        "inlineSources": true,
+        "outDir": "dist",
+        "incremental": true,
+        "sourceRoot": ".",
+        "allowJs": false,
+        "paths": {
+            // "dat.gui": [ "./node_modules/dat.gui/build/dat.gui.module" ],
+            "lil.gui": [
+                "./node_modules/lil-gui/dist/lil.gui.esm.d.ts"
+            ],
+            "three-bvh-csg": [
+                "./node_modules/three-bvh-csg/build/index.module.js."
+            ]
+        }
+    },
+    "include": [
+        "*.ts",
+        "utils/CSGMesh.ts"
+    ]
+}
