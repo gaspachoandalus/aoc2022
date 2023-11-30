@@ -24,11 +24,12 @@
     "typescript": "^4"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "run-p -sl serve watch",
+    "build": "tsc && npx copyfiles \"main.html\" \"dist/\" && npx copyfiles -f \"node_modules/lil-gui/dist/*\" \"dist/lil-gui\" && npx copyfiles -f \"*.in\" \"dist/\"",
+    "dev": "npm run build && run-p -sl serve watch",
     "test": "playwright test",
     "watch": "tsc --watch --preserveWatchOutput --pretty",
-    "serve": "npx serve"
+    "serve": "npx serve",
+    "deploy": "npm run build && firebase deploy"
   },
   "imports": {
     "#internal/*.js": "./dist/*.js"

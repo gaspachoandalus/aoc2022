@@ -1,3 +1,8 @@
 {
-    "cleanUrls": false
+    "public": "dist",
+    "cleanUrls": false,
+    "rewrites": [
+        { "source": "./:id.js", "destination": "./dist/:id.js" },
+        { "source": "./utils/:id.js", "destination": "./dist/utils/:id.js" }
+      ]
 }

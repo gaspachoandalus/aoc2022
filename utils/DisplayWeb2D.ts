@@ -7,9 +7,6 @@ import { Checkpoint } from "./Checkpoint.js";
 import Stats from 'three/examples/jsm/libs/stats.module.js';
 import { Pause } from "./Pause.js";
 import { Log } from "./Log.js";
-import { Rect } from "terminal-kit";
-import { RED_GREEN_RGTC2_Format } from "three";
-import { assert } from "console";
 
 export interface VectorWithContent extends Vector {
     content?: string;

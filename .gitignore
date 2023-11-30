@@ -1,6 +1,6 @@
 previous/
 node_modules/
-dist/
+/dist/
 .DS_Store
 .vscode/
 /test-results/
@@ -8,3 +8,4 @@ dist/
 /blob-report/
 /playwright/.cache/
 utils/coverage
+.firebase/
