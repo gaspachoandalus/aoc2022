@@ -611,8 +611,8 @@ export class DisplayWeb2D implements Display2D {
 
             }
             const charMove = {
-                x: Math.trunc(pixelMove.x / this.charSize.x / this.scale),
-                y: Math.trunc(pixelMove.y / this.charSize.y / this.scale),
+                x: pixelMove.x / this.charSize.x / this.scale,
+                y: pixelMove.y / this.charSize.y / this.scale,
             }
 
             if (this.beginTouch && charMove.x) {
