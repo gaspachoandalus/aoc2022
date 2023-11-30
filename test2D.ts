@@ -2,13 +2,13 @@ import { Colors, Display2D } from "./utils/Display2D.js";
 import { Vector, sleep } from "./utils/vector.js";
 
 enum Test {
-    text,
+    basicText,
     fill,
     random,
     scrollIntoView
 };
 
-const test: Test = Test.scrollIntoView;
+const test: Test = Test.basicText;
 
 export class AOC {
 
@@ -20,8 +20,10 @@ export class AOC {
 
     public async Run() {
 
+        this.display.setBoundaries({ min: { x: 0, y: -4}, max: null });
+
         switch (test) {
-            case Test.text:
+            case Test.basicText:
                 let y = 0;
                 const sampleText = "the little brown fox jumps over the lazy dog";
 

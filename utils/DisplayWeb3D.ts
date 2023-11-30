@@ -597,7 +597,7 @@ export class WebDisplay3D implements Display3D
                     voxelGeo.translate(item.x * this.cubeSize, item.y * this.cubeSize, item.z * this.cubeSize);
         
                     if (!type.group) {
-                        type.group = new THREE.Group()
+                        type.group = new THREE.Group();
                         this.scene.add( type.group );
                     }
         
