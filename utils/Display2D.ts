@@ -61,18 +61,19 @@ export namespace Colors {
  * Terminal.setItem([{x: 0, y: 0}, {x: 1, y: 1}]); // accepts an Iterable
  * Terminal.addItem([{x: 0, y: 0}, {x: 1, y: 1}]); // accepts an Iterable
  * Terminal.setTitle("my simulation");
- * Terminal.throttle() // breaks heavy operations in the simulation to let the JS engine handle events, redraw screen, pauses the simulation if requested
+ * Terminal.checkpoint() // yields to the JS engine for events and rendering, and pauses the simulation if requested
  */
 export interface Display2D {
     init(iterationsPerSecond?: number): Display2D;
     scrollIntoView(pos: Vector, smooth: boolean): Display2D;
     end(result: Object): Display2D;
     log(text: string): Display2D;
-    setBoundaries(boundaries?: { min: Vector; max: Vector; }): Display2D;
+    /** Centers the world-space bounds in the viewport; max coordinates are exclusive. */
+    fitBounds(bounds?: { min: Vector; max: Vector; }): Display2D;
     setLayer(layer: number, name: string, config?: { defaultChar?: string; style: Style; }): Display2D;
     setItems(items: Iterable<VectorWithContent>, layer?: number): Display2D;
     addItems(items: Iterable<VectorWithContent>, layer: number): Display2D;
     setTitle(title: string): Display2D;
     nextStep(text: string): Display2D;
-    throttle(ratio?: number): Promise<void>;
-    }
+    checkpoint(): Promise<void>;
+}

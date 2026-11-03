@@ -2,7 +2,7 @@ import termkit from "terminal-kit";
 import { Checkpoint } from "./Checkpoint.js";
 import { Pause } from "./Pause.js";
 import { Vector } from "./vector.js";
-import { ItemHashStore } from "./ItemHashStore.js";
+import { Quadtree, Rectangle } from "./QuadTree.js";
 import { Display2D, VectorWithContent, Style, Colors } from "./Display2D.js";
 
 const min_iterations_per_second = 1;
@@ -25,26 +25,46 @@ export interface Color {
  * Terminal based display of a 2D matrix
  * 
  * After init() the following keys are available:
- *  - Space: pauses simulation at the next throttle(). Press space again to un-pause.
+ *  - Space: pauses simulation at the next checkpoint(). Press space again to un-pause.
  *  - "L": increases simulation speed. forward step by step if simulation is paused.
  *  - "M": max simulation speed
  *  - "J": decreases simulation speed
  *  - arrows: moves the zone of the map displayed
  */ 
+// an item with the order it was written in, the newest is drawn last
+type StoredItem = VectorWithContent & { sequence: number };
+
+export interface TerminalLayer {
+    quadtree: Quadtree<StoredItem>;
+    // one item per rectangle: an item written on the same start cell with the same length replaces the previous one
+    storedItems: Map<string, StoredItem>;
+    sequence: number;
+    config: {defaultChar?: string, style?: Style };
+    visible: boolean;
+    name?: string;
+}
+
+// the quadtree is created around the first item written, then grows when an item is written outside of it
+function createQuadtree(): Quadtree<StoredItem> {
+    return Quadtree.create<StoredItem>();
+}
+
+function itemRectangle(item: VectorWithContent): Rectangle {
+    return new Rectangle(item.x, item.y, Math.max(1, item.content?.length ?? 1), 1);
+}
+
+function rectangleKey(item: VectorWithContent): string {
+    const rectangle = itemRectangle(item);
+    return `${rectangle.x},${rectangle.y},${rectangle.width}`;
+}
+
 export class Terminal implements Display2D {
 
     private boundaries: { min: Vector, max: Vector };
     private width = 0;
     private height = 0;
 
-    layers: Array<{
-        itemStore: ItemHashStore;
-        initialized: boolean; // layer initialized once ?
-        config: {defaultChar?: string, style?: Style };
-        visible: boolean;
-        lastRender: number;
-        name?: string;
-    }> = Array(4);
+    layers: Array<TerminalLayer> = Array(4);
 
     private scrollIntoViewPos: Vector = null;
     private scrollIntoViewSmooth: boolean = true;
@@ -54,7 +74,6 @@ export class Terminal implements Display2D {
     private simulationStart: number;
     private latestFramesIntervals: Array<number> = [];
     private lastFrameStart = 0;
-    private lastFramePos: Vector = null;
     private lastKeyPressed = 0;
 
     private mouse: Vector = {x: 0, y: 0};
@@ -73,7 +92,10 @@ export class Terminal implements Display2D {
     public init(iterationsPerSecond?: number): Display2D {
 
         if (this.term) {
-            return;
+            if (iterationsPerSecond !== undefined) {
+                this.iterationsPerSecond = iterationsPerSecond;
+            }
+            return this;
         }
 
         this.iterationsPerSecond = iterationsPerSecond ?? default_start_iterations_per_second;
@@ -81,13 +103,7 @@ export class Terminal implements Display2D {
         this.simulationStart = performance.now();
 
         for (let layerIdx = 0; layerIdx < this.layers.length; layerIdx++) {
-            this.layers[layerIdx] = {
-                itemStore: new ItemHashStore(),
-                initialized: false,
-                config: null,
-                visible: true,
-                lastRender: 0
-            };
+            this.layers[layerIdx] = this.createLayer();
         }
         this.layers[0].config = { defaultChar: "#", style: { color: Colors.white, bgColor: null}};
         this.layers[1].config = { defaultChar: " ", style: { color: Colors.red, bgColor: null} };
@@ -118,32 +134,81 @@ export class Terminal implements Display2D {
         return this;
     }
 
-    public setBoundaries(boundaries: { min: Vector, max: Vector }): Display2D {
-        this.boundaries = boundaries;
-        if (this.boundaries.max.x - this.boundaries.min.x > this.screenbuffers[0].width) {
-            this.boundaries.max.x = this.screenbuffers[0].width + this.boundaries.min.x;
+    public fitBounds(bounds?: { min: Vector, max: Vector }): Display2D {
+        const fittedBounds = bounds ?? this.getContentBounds();
+        if (!fittedBounds) {
+            throw new RangeError("No display content is available to fit; provide explicit bounds.");
         }
-        // if (this.boundaries.max.y - this.boundaries.min.y > DisplayImpl.screen.height) {
-        //     this.boundaries.max.y = DisplayImpl.screen.width + this.boundaries.min.y;
-        // }
+
+        const boundsWidth = fittedBounds.max.x - fittedBounds.min.x;
+        const boundsHeight = fittedBounds.max.y - fittedBounds.min.y;
+        if (
+            ![
+                fittedBounds.min.x,
+                fittedBounds.min.y,
+                fittedBounds.max.x,
+                fittedBounds.max.y
+            ].every(Number.isFinite)
+            || boundsWidth <= 0
+            || boundsHeight <= 0
+        ) {
+            throw new RangeError("Display bounds must be finite and have positive dimensions.");
+        }
+        if (this.width <= 0 || this.height <= 1) {
+            throw new Error("Initialize the terminal display before fitting bounds.");
+        }
+
+        const viewportHeight = this.height - 1;
+        const centerX = (fittedBounds.min.x + fittedBounds.max.x) / 2;
+        const centerY = (fittedBounds.min.y + fittedBounds.max.y) / 2;
+        const min = {
+            x: Math.floor(centerX - this.width / 2),
+            y: Math.floor(centerY - viewportHeight / 2)
+        };
+        this.boundaries = {
+            min,
+            max: {
+                x: min.x + this.width - 1,
+                y: min.y + viewportHeight - 1
+            }
+        };
+
         return this;
     }
 
-    public setLayer(layer: number, name: string, config: {defaultChar?: string, style: Style }): Display2D {
+    private getContentBounds(): { min: Vector, max: Vector } | null {
+        let bounds: { min: Vector, max: Vector } | null = null;
+        for (const layer of this.layers) {
+            const layerBounds = layer?.quadtree.getBounds();
+            if (!layerBounds) {
+                continue;
+            }
+            if (!bounds) {
+                bounds = {
+                    min: { ...layerBounds.min },
+                    max: { ...layerBounds.max }
+                };
+                continue;
+            }
+            bounds.min.x = Math.min(bounds.min.x, layerBounds.min.x);
+            bounds.min.y = Math.min(bounds.min.y, layerBounds.min.y);
+            bounds.max.x = Math.max(bounds.max.x, layerBounds.max.x);
+            bounds.max.y = Math.max(bounds.max.y, layerBounds.max.y);
+        }
+        return bounds;
+    }
+
+    public setLayer(layer: number, name: string, config?: {defaultChar?: string, style?: Style }): Display2D {
 
         // add layer if needed
-        this.layers[layer] = this.layers[layer] ?? {
-            itemStore: new ItemHashStore(),
-            initialized: false,
-            config: null,
-            visible: true,
-            lastRender: 0
-        };
+        this.layers[layer] = this.layers[layer] ?? this.createLayer();
 
         // add screenbuffer if needed
         this.screenbuffers[layer] = this.screenbuffers[layer] ?? new termkit.ScreenBufferHD({ dst: this.screenbufferTerm, width: this.width, height: this.height - 1, noFill: true });
 
-        this.layers[layer].config = {defaultChar: config.defaultChar, style: {...config.style}};
+        if (config) {
+            this.layers[layer].config = { defaultChar: config.defaultChar, style: { ...config.style } };
+        }
 
         this.layers[layer].name = name;
 
@@ -152,15 +217,29 @@ export class Terminal implements Display2D {
     
     public setItems(items: Iterable<VectorWithContent>, layer: number = 0): Display2D {
 
-        this.layers[layer].itemStore.setItems(items);
-        return this;
+        const terminalLayer = this.layers[layer];
+        terminalLayer.storedItems = new Map();
+        terminalLayer.quadtree = createQuadtree();
+        return this.addItems(items, layer);
     }
 
     public addItems(items: Iterable<VectorWithContent>, layer: number = 0): Display2D {
 
-        this.layers[layer].itemStore.addItems(items);
+        const terminalLayer = this.layers[layer];
+        for (const item of items) {
+            const stored = this.storeItem(terminalLayer, item);
+            // an item stored again on the same rectangle replaces the previous one in the quadtree too
+            terminalLayer.quadtree.insert(itemRectangle(stored), stored);
+        }
         return this;
     }
+
+    private storeItem(layer: TerminalLayer, item: VectorWithContent): StoredItem {
+        const stored: StoredItem = { ...item, sequence: ++layer.sequence };
+        layer.storedItems.set(rectangleKey(item), stored);
+        return stored;
+    }
+
 
     public setTitle(title: string): Display2D {
         this.title = title;
@@ -174,14 +253,15 @@ export class Terminal implements Display2D {
     
     private TermkitInit() {
 
-        termkit.getDetectedTerminal( function( error , term ) {
-            term.cyan( 'Terminal name: %s\n' , term.appName ) ;
-            term.cyan( 'Terminal app: %s\n' , term.app ) ;
-            term.cyan( 'Terminal generic: %s\n' , term.generic ) ;
-            term.cyan( 'Config file: %s\n' , term.termconfigFile ) ;
-        } ) ;
-
-        this.term = termkit.terminal;
+        // env-based auto-detection (TERM/TERM_PROGRAM) is unreliable on Windows and falls back
+        // to a generic profile with no truecolor support, so force a truecolor-capable one instead
+        this.term = termkit.createTerminal({
+            generic: "xterm-truecolor",
+            appId: "xterm-truecolor",
+            appName: "xterm-truecolor",
+            isTTY: !!process.stdout.isTTY,
+            isSSH: !!process.env.SSH_CONNECTION
+        });
         this.width = this.term.width ?? 200;
         this.height = this.term.height ?? 100;
 
@@ -297,14 +377,18 @@ export class Terminal implements Display2D {
         return this;
     }
 
-    async throttle(ratio: number = 1): Promise<void> {
+    async checkpoint(): Promise<void> {
 
         const maxPerSeconds =
             this.iterationsPerSecond == max_iterations_per_second
                 ? -1
                 : this.iterationsPerSecond; 
-        await Checkpoint.throttle(maxPerSeconds, ratio);
+        await Checkpoint.checkpoint(maxPerSeconds);
         
+    }
+
+    private createLayer(): TerminalLayer {
+        return { quadtree: createQuadtree(), storedItems: new Map(), sequence: 0, config: null, visible: true };
     }
 
     private IsInBoundary(pos: VectorWithContent) {
@@ -316,67 +400,51 @@ export class Terminal implements Display2D {
         );
     }
 
-    private renderLayer(layerIdx: number, moved: boolean): boolean {
+    private renderLayer(layerIdx: number): void {
 
         const layer = this.layers[layerIdx];
 
-        const mustClearScreenBuffer = 
-            moved ||
-            !layer.initialized ||
-            layer.lastRender < layer.itemStore.getLastSetTime();
-
-        if (mustClearScreenBuffer) {
-        
-            layer.initialized = true;
-
-            // clear screen buffer
-            this.screenbuffers[layerIdx].fill({
-                attr: {
-                    color: {
-                        r: 0x0,
-                        g: 0x0,
-                        b: 0x0,
-                        // a: 0x0
-                    } as any,
-                    bgColor: {
-                        r: 0x0,
-                        g: 0x0,
-                        b: 0x0,
-                        // a: 0x0
-                    } as any,
-                    charTransparency: true,
-                    fgTransparency: true,
-                    styleTransparency: true,
-                    bgTransparency: true
-                },
-                char: " "
-            });
-        }
+        // the layer is redrawn from scratch on every frame: terminal-kit only sends the cells that changed
+        this.screenbuffers[layerIdx].fill({
+            attr: {
+                color: {
+                    r: 0x0,
+                    g: 0x0,
+                    b: 0x0,
+                    // a: 0x0
+                } as any,
+                bgColor: {
+                    r: 0x0,
+                    g: 0x0,
+                    b: 0x0,
+                    // a: 0x0
+                } as any,
+                charTransparency: true,
+                fgTransparency: true,
+                styleTransparency: true,
+                bgTransparency: true
+            },
+            char: " "
+        });
 
         if (!layer.visible) {
             return;
         }
 
-        let items: VectorWithContent[];
-        if (mustClearScreenBuffer) {
+        // the query covers the view plus one cell on each side, IsInBoundary then applies the exact rule
+        const query = new Rectangle(this.boundaries.min.x - 1, this.boundaries.min.y - 1, this.width + 2, this.height + 2);
 
-            // get items to display
-            items = layer.itemStore.getVisibleItems(this.boundaries.min.x, this.boundaries.min.y, this.width, this.height, v => this.IsInBoundary(v));    
-    
+        // the quadtree yields items in tree order, so they are sorted to draw the newest last, on top of the overlapping ones
+        const visible: StoredItem[] = [];
+        for (const item of layer.quadtree.retrieveObjects(query)) {
+            if (this.IsInBoundary(item)) {
+                visible.push(item);
+            }
         }
-        else {
-
-            // get items to display
-            items = layer.itemStore.getNewItems(this.boundaries.min.x, this.boundaries.min.y, this.width, this.height, v => this.IsInBoundary(v));
-
-        }
-
-        // display items on the screen buffer
-        for (const item of items) {
+        visible.sort((a, b) => a.sequence - b.sequence);
+        for (const item of visible) {
             this.renderItem(item, item.content ?? layer.config.defaultChar ?? " ", layerIdx, layer.config.style);
         }
-
-        layer.lastRender = performance.now();
 
         // draw layer on main screen buffer
         this.screenbuffers[layerIdx].draw({
@@ -407,15 +475,28 @@ export class Terminal implements Display2D {
             }
         }
 
-        // if position has moved since la redraw, we must redraw all screen
-        const moved = (this.lastFramePos == null) || (this.lastFramePos.x != this.boundaries.min.x || this.lastFramePos.y != this.boundaries.min.y);
-
         this.screenbufferTerm.fill();
         for (let layerIdx = 0; layerIdx < this.layers.length; layerIdx++) {
-            this.renderLayer(layerIdx, moved);
+            this.renderLayer(layerIdx);
         }
 
-        // Top bar
+        this.renderStatusBar(frameStart);
+
+        // Draw to screen
+        this.screenbufferTerm.draw({
+            delta: true,
+            blending: false,
+            x: 1,
+            y: 0
+        });
+
+        this.scheduleNextFrame(frameStart);
+
+        return true;
+    }
+
+    /** Draws the timing, viewport, layer, and performance summary in the terminal's top row. */
+    private renderStatusBar(frameStart: number): void {
         this.screenbufferTop.fill({
             attr: {
                 bgColor: "005000",
@@ -449,27 +530,17 @@ export class Terminal implements Display2D {
             x: 0,
             y: 1
         });
+    }
 
-        // Draw to screen
-        this.screenbufferTerm.draw({
-            delta: true,
-            blending: false,
-            x: 1,
-            y: 0
-        });
-
-        // save interval with previous frame
+    /** Records recent frame durations and schedules the next render against the target frame rate. */
+    private scheduleNextFrame(frameStart: number): void {
         if (this.lastFrameStart > 0) {
             this.latestFramesIntervals.push(frameStart - this.lastFrameStart);
             this.latestFramesIntervals.splice(0, this.latestFramesIntervals.length - 10); // keep 10 elements max
         }
         this.lastFrameStart = frameStart;
-        this.lastFramePos = {...this.boundaries.min};
 
-        // request next frame
         setTimeout(() => this.renderScreen(), Math.max(target_max_frame_duration_ms - (performance.now() - frameStart), 0));
-
-        return true;
     }
 
     /**

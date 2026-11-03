@@ -5,6 +5,14 @@ export class Log {
     static logVersion: number = 0;
     static updateVersion: number = 0;
 
+    public static setTitle(text: string) {
+        const title = document.getElementById("simulation-title");
+        if (!title) {
+            throw new Error("Missing simulation title element.");
+        }
+        title.textContent = text;
+    }
+
     public static log(text: string) {
         this.logVersion = performance.now();
         this.logLines.push(text);
@@ -15,8 +23,11 @@ export class Log {
 
     public static update() {
         if (this.updateVersion < this.logVersion) {
-            const info = document.getElementById("info");
-            info.innerText = this.logLines.join("\n");
+            const traces = document.getElementById("simulation-traces");
+            if (!traces) {
+                throw new Error("Missing simulation traces element.");
+            }
+            traces.textContent = this.logLines.join("\n");
             this.updateVersion = performance.now();
         }
     }

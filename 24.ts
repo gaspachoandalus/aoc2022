@@ -6,11 +6,17 @@ export type Status = {
     part2: number;
 }
 
+type TimedPosition = Vector & { z: number };
+
 enum Layers {
-    current = 0,
-    blizzards = 2,
-    path = 3,
-    solutions = 4
+    blizzards = 0,
+    searchFrontier = 1,
+    candidatePath = 2,
+    current = 3,
+    bestRoute = 4,
+    trip1 = 5,
+    trip2 = 6,
+    trip3 = 7
 }
 
 const blizzardDirections: Record<string, Vector> = {
@@ -21,7 +27,12 @@ const blizzardDirections: Record<string, Vector> = {
 };
 
 export const config = {
-    type: "3D"
+    type: "3D",
+    cameraFollow: {
+        distanceMultiplier: 3,
+        // Equal +Y elevation and +Z offset give a 45° downward view.
+        positionDirection: [0, 1, 1] as const
+    }
 };
 
 export class Problem {
@@ -40,20 +51,38 @@ export class Problem {
     async Run(lines: string[]): Promise<Status | undefined> {
 
         this.display.init(100);
-        this.display.setStyle(0, { color: Colors.orange, name: "blizzards" })
-        this.display.setStyle(1, { color: Colors.green, name: "queue" })
-        this.display.setStyle(2, { color: Colors.blue, name: "current path" })
-        this.display.setStyle(3, { color: Colors.yellow, name: "current path head" })
-        this.display.setStyle(4, { color: Colors.red, name: "solutions" })
+        this.display.setStyle(Layers.blizzards, { color: Colors.orange, name: "Blizzards" })
+        this.display.setStyle(Layers.searchFrontier, { color: Colors.green, name: "Search frontier" })
+        this.display.setStyle(Layers.candidatePath, { color: Colors.blue, name: "Candidate route" })
+        this.display.setStyle(Layers.current, { color: Colors.yellow, name: "Search position" })
+        this.display.setStyle(Layers.bestRoute, { color: Colors.red, name: "Best route" })
+        this.display.setStyle(Layers.trip1, { color: Colors.pink, name: "Path 1: start to exit" })
+        this.display.setStyle(Layers.trip2, { color: Colors.white, name: "Path 2: exit to start" })
+        this.display.setStyle(Layers.trip3, { color: Colors.green, name: "Path 3: start to exit" })
         this.display.start();
 
         this.parse(lines);
 
-        this.display.setBox(this.end.x, this.end.y, 0);
+        const [count1, path1] = await this.bfs(this.start, 0, [], this.end);
+        this.displayJourney(path1, Layers.trip1);
+        await this.display.checkpoint();
 
-        let [count1, path1] = await this.bfs(this.start, 0, [], this.end);         // first run
-        let [count2, path2] = await this.bfs(this.end, count1, [], this.start);    // go back to the start (to get snacks)
-        let [count3, path3] = await this.bfs(this.start, count2, [], this.end);    // reach the goal again
+        const [count2, path2] = await this.bfs(this.end, count1, [], this.start);
+        this.displayJourney(path2, Layers.trip2);
+        await this.display.checkpoint();
+
+        const [count3, path3] = await this.bfs(this.start, count2, [], this.end);
+        this.displayJourney(path3, Layers.trip3);
+
+        for (const layer of [
+            Layers.searchFrontier,
+            Layers.candidatePath,
+            Layers.current,
+            Layers.bestRoute
+        ]) {
+            this.display.clear(layer);
+        }
+        await this.display.checkpoint();
 
         return {
             part1: count1,
@@ -68,16 +97,12 @@ export class Problem {
         };
     }
 
-    highestMinute: number = 0;
-
-    async bfs(pos: Vector, startMinute: number, startPath: Array<Vector>, end: Vector): Promise<[number, Array<Vector>]> {
+    async bfs(pos: Vector, startMinute: number, startPath: Array<Vector>, end: Vector): Promise<[number, TimedPosition[]]> {
 
         const visited = new Map<string, Vector>();
 
         let deque = [ { pos, minute: startMinute, path: [{...pos, z: startMinute}] } ];
         let best = null;
-
-        let lastDisplayedMinute = -1;
 
         while (deque.length > 0) {
 
@@ -99,42 +124,22 @@ export class Problem {
             }
 
             // display current path
-            this.display.clear(2);
+            this.display.clear(Layers.candidatePath);
             for (const element of path) {
-                this.display.addBlock(element.x, element.y, element.z, 2);
+                this.display.addBlock(element.x, element.y, element.z, Layers.candidatePath);
             }
 
             // display deque nodes
-            this.display.clear(1);
+            this.display.clear(Layers.searchFrontier);
             for (const i of deque.values()) {
-                this.display.addBlock(i.pos.x, i.pos.y, i.minute, 1);
+                this.display.addBlock(i.pos.x, i.pos.y, i.minute, Layers.searchFrontier);
             }
 
             // display head
-            this.display.clear(3)
-            this.display.addBlock(pos.x, pos.y, minute, 3);
-            
-            if (lastDisplayedMinute != minute) {
+            this.display.clear(Layers.current)
+            this.display.addBlock(pos.x, pos.y, minute, Layers.current);
 
-                // this.display.center(0);
-                
-                // Terminal.setItems(this.blizzardsAt[minute].values(), Layers.blizzards)
-                
-                if (minute > this.highestMinute) {
-                    this.display.setBox(undefined, undefined, minute);
-                //     this.display.clear(0)
-                //     for (const item of this.blizzardsAt[minute].values()) {
-                //         this.display.addBlock(item.x, item.y, minute, 0);
-                //     }
-
-                    this.highestMinute = minute;
-                }
-
-                // this.display.throttle();
-                lastDisplayedMinute = minute;
-            }
-
-            await this.display.throttle();
+            await this.display.checkpoint();
 
             this.display.center(pos.x, pos.y, minute);
 
@@ -142,7 +147,7 @@ export class Problem {
                 // .setTitle(`minute ${minute}, list ${deque.length}, visited ${visited.size}`)
                 // .setItems(path, Layers.path)
                 // .setItems([pos], Layers.current)
-                // .throttle();
+                // .checkpoint();
 
             // positions to check (4 around + current)
             const availablePositions = moves
@@ -165,12 +170,13 @@ export class Problem {
                     // new best
                     if (null == best || minute < best[0]) {
                         this.display.log(`solution: ${minute}`);
-                        best = [minute, [...path]];
+                        const completedPath = [...path, { ...v, z: minute }];
+                        best = [minute, completedPath];
 
                         // add solution
-                        this.display.clear(4);
-                        for (const i in path) {
-                            this.display.addBlock(path[i].x, path[i].y, path[i].z, 4);
+                        this.display.clear(Layers.bestRoute);
+                        for (const point of completedPath) {
+                            this.display.addBlock(point.x, point.y, point.z, Layers.bestRoute);
                         }
                     }
 
@@ -193,6 +199,17 @@ export class Problem {
         return best;
     }
 
+    private displayJourney(
+        path: TimedPosition[],
+        layer: Layers
+    ): void {
+        this.display.clear(layer);
+
+        for (const point of path) {
+            this.display.addBlock(point.x, point.y, point.z, layer);
+        }
+    }
+
     parse(lines: string[]): void {
 
         this.blizzards = lines.reduce((p, c, y) => {
@@ -209,4 +226,3 @@ export class Problem {
         this.end = {x: this.size.x - 1, y: this.size.y };
     }
 }
-

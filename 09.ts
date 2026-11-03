@@ -47,10 +47,14 @@ export class AOC {
 
         visitedTail.set(vectorAsString({x: 0, y: 0}), {x: 0, y: 0});
 
-        this.display.setLayer(Layers.head, "head", { style: { bgColor: Colors.red }});
-        this.display.setLayer(Layers.rope, "rope");
-        this.display.setLayer(Layers.visitedTail, "nodes visited by tail");
-        this.display.setLayer(Layers.visitedSecond, "nodes visited by second element");
+        this.display.setLayer(Layers.head, "Rope head", { style: { bgColor: Colors.red }});
+        this.display.setLayer(Layers.rope, "Rope body");
+        this.display.setLayer(Layers.visitedTail, "Tail trail");
+        this.display.setLayer(Layers.visitedSecond, "Knot 2 trail");
+        this.display
+            .setItems(this.rope.nodes.slice(1), Layers.rope)
+            .setItems(this.rope.nodes.slice(0, 1), Layers.head)
+            .fitBounds();
 
         for (const line of lines) {
 
@@ -71,7 +75,7 @@ export class AOC {
                 this.rope.nodes[0].y += direction.y;
                 
                 await this.display.nextStep(`Round ${line} move to ${direction.x},${direction.y}`)
-                    .throttle();
+                    .checkpoint();
 
                 // move following nodes
                 for (let nodeIdx = 1; nodeIdx < this.rope.nodes.length; nodeIdx++) {
@@ -111,7 +115,7 @@ export class AOC {
                     .setItems(this.rope.nodes.slice(1), Layers.rope)
                     .setItems(this.rope.nodes.slice(0, 1), Layers.head)
                     .scrollIntoView(this.rope.nodes[0], true)
-                    .throttle();
+                    .checkpoint();
             }
         }
 

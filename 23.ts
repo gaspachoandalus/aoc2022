@@ -6,6 +6,10 @@ export type Status = {
     part2: number;
 }
 
+export const config = {
+    type: "2D"
+};
+
 // y positive is south
 const _8directions = [
     { x: 1, y: 0 }, // E
@@ -39,7 +43,12 @@ export class AOC {
         this.parse(lines);
 
         this.display
-            .setBoundaries({ min: { x: -5, y: -5 }, max: { x: 200, y: 100 } })
+            .setLayer(0, "Elves")
+            .setLayer(1, "Uncontested move proposals");
+
+        this.display
+            .setItems(this.elves.values())
+            .fitBounds();
 
         let emptyTilesAtRound10;
         let round;
@@ -47,9 +56,8 @@ export class AOC {
         for (round = 0, moves = Infinity; moves > 0; round++) {
             await this.display
                 .setItems(this.elves.values())
-                .setItems([], 2)
                 .setTitle(`Round ${round}`)
-                .throttle();
+                .checkpoint();
             moves = await this.makeMoves(round);
 
             if (round == 9) {
@@ -123,7 +131,7 @@ export class AOC {
         // // display all moves
         await this.display
             .setItems([...movesByElf.values()].filter(v => movesCountByDestination.get(vectorAsString(v.destination)) == 1).map(v => v.start), 1)
-            .throttle(); // display all moves
+            .checkpoint(); // display all moves
     
         for (const [ id, move ] of movesByElf) {
             if (movesCountByDestination.get(vectorAsString(move.destination)) == 1) {

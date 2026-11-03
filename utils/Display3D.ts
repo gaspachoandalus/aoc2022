@@ -28,14 +28,6 @@ export interface Display3D
 {
     init(iterationsPerSecond?: number);
     /**
-     * Sets or changes a white box on the scene at the origin point
-     * Previous values (or 1 by default) will be used for missing parameters.
-     * @param width box width
-     * @param height box height
-     * @param depth box depth
-     */
-    setBox(width?: number, height?: number, depth?: number);
-    /**
      * defines attributes of a group of voxels
      * @param group group id
      * @param style characteristics
@@ -48,7 +40,7 @@ export interface Display3D
     fadeOut(group: number, opacity: number);
     clear(group: number);
     pause(): Promise<void>;
-    throttle(ratio?: number): Promise<void>;
+    checkpoint(): Promise<void>;
     center(group: number): void;
     center(x: number, y: number, z: number): void;
     center(x: number, y?: number, z?: number): void;

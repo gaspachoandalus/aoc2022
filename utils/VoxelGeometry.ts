@@ -1,6 +1,34 @@
 import * as THREE from 'three';
 import { vector3DAsString } from "./vector.js";
 
+type CoordinateAxis = "x" | "y" | "z";
+
+type GeometryBuffers = {
+    indices: number[];
+    vertices: number[];
+    normals: number[];
+    uvs: number[];
+    numberOfVertices: number;
+    groupStart: number;
+};
+
+type PlaneDefinition = {
+    u: CoordinateAxis;
+    v: CoordinateAxis;
+    w: CoordinateAxis;
+    uDirection: number;
+    vDirection: number;
+    width: number;
+    height: number;
+    depth: number;
+    offsetU: number;
+    offsetV: number;
+    offsetW: number;
+    gridX: number;
+    gridY: number;
+    materialIndex: number;
+};
+
 export class VoxelGeometry {
     voxels: Map<string, {pos: THREE.Vector3, neighbors: number}>; // stores all points individually
     leafs: Map<string, THREE.Vector3>; // visible points (those having at least 1 missing neighbors)
@@ -101,20 +129,15 @@ export class VoxelGeometry {
      */
     public getGeometry(color: THREE.Color): THREE.BufferGeometry {
 
-        let geometry = new THREE.BufferGeometry();
-        const scope = geometry;
-
-        // buffers
-
-		const indices = [];
-		const vertices = [];
-		const normals = [];
-		const uvs = [];
-
-        // helper variables
-
-		let numberOfVertices = 0;
-		let groupStart = 0;
+        const geometry = new THREE.BufferGeometry();
+        const buffers: GeometryBuffers = {
+            indices: [],
+            vertices: [],
+            normals: [],
+            uvs: [],
+            numberOfVertices: 0,
+            groupStart: 0
+        };
 
         // constants
         
@@ -140,22 +163,52 @@ export class VoxelGeometry {
             
                     switch (moveName) {
                         case "px":
-                            buildPlane('z', 'y', 'x', - 1, - 1, depth, height, width, this.cubeSize * pos.z, this.cubeSize * pos.y, this.cubeSize * pos.x, depthSegments, heightSegments, 0); // px
+                            this.buildPlane(geometry, buffers, {
+                                u: "z", v: "y", w: "x", uDirection: -1, vDirection: -1,
+                                width: depth, height, depth: width,
+                                offsetU: this.cubeSize * pos.z, offsetV: this.cubeSize * pos.y, offsetW: this.cubeSize * pos.x,
+                                gridX: depthSegments, gridY: heightSegments, materialIndex: 0
+                            });
                             break;
                         case "nx":
-                            buildPlane('z', 'y', 'x', 1, - 1, depth, height, - width, this.cubeSize * pos.z, this.cubeSize * pos.y, this.cubeSize * pos.x, depthSegments, heightSegments, 1); // nx
+                            this.buildPlane(geometry, buffers, {
+                                u: "z", v: "y", w: "x", uDirection: 1, vDirection: -1,
+                                width: depth, height, depth: -width,
+                                offsetU: this.cubeSize * pos.z, offsetV: this.cubeSize * pos.y, offsetW: this.cubeSize * pos.x,
+                                gridX: depthSegments, gridY: heightSegments, materialIndex: 1
+                            });
                             break;
                         case "py":
-                            buildPlane('x', 'z', 'y', 1, 1, width, depth, height, this.cubeSize * pos.x, this.cubeSize * pos.z, this.cubeSize * pos.y, widthSegments, depthSegments, 2); // py
+                            this.buildPlane(geometry, buffers, {
+                                u: "x", v: "z", w: "y", uDirection: 1, vDirection: 1,
+                                width, height: depth, depth: height,
+                                offsetU: this.cubeSize * pos.x, offsetV: this.cubeSize * pos.z, offsetW: this.cubeSize * pos.y,
+                                gridX: widthSegments, gridY: depthSegments, materialIndex: 2
+                            });
                             break;
                         case "ny":
-                            buildPlane('x', 'z', 'y', 1, - 1, width, depth, - height, this.cubeSize * pos.x, this.cubeSize * pos.z, this.cubeSize * pos.y, widthSegments, depthSegments, 3); // ny
+                            this.buildPlane(geometry, buffers, {
+                                u: "x", v: "z", w: "y", uDirection: 1, vDirection: -1,
+                                width, height: depth, depth: -height,
+                                offsetU: this.cubeSize * pos.x, offsetV: this.cubeSize * pos.z, offsetW: this.cubeSize * pos.y,
+                                gridX: widthSegments, gridY: depthSegments, materialIndex: 3
+                            });
                             break;
                         case "pz":
-                            buildPlane('x', 'y', 'z', 1, - 1, width, height, depth, this.cubeSize * pos.x, this.cubeSize * pos.y, this.cubeSize * pos.z, widthSegments, heightSegments, 4); // pz
+                            this.buildPlane(geometry, buffers, {
+                                u: "x", v: "y", w: "z", uDirection: 1, vDirection: -1,
+                                width, height, depth,
+                                offsetU: this.cubeSize * pos.x, offsetV: this.cubeSize * pos.y, offsetW: this.cubeSize * pos.z,
+                                gridX: widthSegments, gridY: heightSegments, materialIndex: 4
+                            });
                             break;
                         case "nz":
-                            buildPlane('x', 'y', 'z', - 1, - 1, width, height, - depth, this.cubeSize * pos.x, this.cubeSize * pos.y, this.cubeSize * pos.z, widthSegments, heightSegments, 5); // nz
+                            this.buildPlane(geometry, buffers, {
+                                u: "x", v: "y", w: "z", uDirection: -1, vDirection: -1,
+                                width, height, depth: -depth,
+                                offsetU: this.cubeSize * pos.x, offsetV: this.cubeSize * pos.y, offsetW: this.cubeSize * pos.z,
+                                gridX: widthSegments, gridY: heightSegments, materialIndex: 5
+                            });
                             break;
                     }
                 }
@@ -182,10 +235,10 @@ export class VoxelGeometry {
 
 		// build geometry
 
-		geometry.setIndex( indices );
-		geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( vertices, 3 ) );
-		geometry.setAttribute( 'normal', new THREE.Float32BufferAttribute( normals, 3 ) );
-		geometry.setAttribute( 'uv', new THREE.Float32BufferAttribute( uvs, 2 ) );
+		geometry.setIndex( buffers.indices );
+		geometry.setAttribute( 'position', new THREE.Float32BufferAttribute( buffers.vertices, 3 ) );
+		geometry.setAttribute( 'normal', new THREE.Float32BufferAttribute( buffers.normals, 3 ) );
+		geometry.setAttribute( 'uv', new THREE.Float32BufferAttribute( buffers.uvs, 2 ) );
 
         geometry.computeBoundingBox();
 /* 
@@ -201,107 +254,58 @@ export class VoxelGeometry {
         geometry.setAttribute( 'color', new THREE.Float32BufferAttribute( colorsBox, 3 ) );
  */
         return geometry;
+    }
 
-        function buildPlane( u, v, w, udir, vdir, width, height, depth, offsetY, offsetV, offsetW, gridX, gridY, materialIndex ) {
+    /** Appends one oriented voxel face to the shared buffers, keeping winding and normals together. */
+    private buildPlane(
+        geometry: THREE.BufferGeometry,
+        buffers: GeometryBuffers,
+        plane: PlaneDefinition,
+    ): void {
+        const segmentWidth = plane.width / plane.gridX;
+        const segmentHeight = plane.height / plane.gridY;
+        const widthHalf = plane.width / 2;
+        const heightHalf = plane.height / 2;
+        const depthHalf = plane.depth / 2;
+        const gridX1 = plane.gridX + 1;
+        const gridY1 = plane.gridY + 1;
+        let vertexCounter = 0;
+        let groupCount = 0;
+        const vector = new THREE.Vector3();
 
-			const segmentWidth = width / gridX;
-			const segmentHeight = height / gridY;
+        for (let iy = 0; iy < gridY1; iy++) {
+            const y = iy * segmentHeight - heightHalf;
+            for (let ix = 0; ix < gridX1; ix++) {
+                const x = ix * segmentWidth - widthHalf;
 
-			const widthHalf = width / 2;
-			const heightHalf = height / 2;
-			const depthHalf = depth / 2;
+                vector[plane.u] = x * plane.uDirection + plane.offsetU;
+                vector[plane.v] = y * plane.vDirection + plane.offsetV;
+                vector[plane.w] = depthHalf + plane.offsetW;
+                buffers.vertices.push(vector.x, vector.y, vector.z);
 
-			const gridX1 = gridX + 1;
-			const gridY1 = gridY + 1;
+                vector[plane.u] = 0;
+                vector[plane.v] = 0;
+                vector[plane.w] = plane.depth > 0 ? 1 : -1;
+                buffers.normals.push(vector.x, vector.y, vector.z);
 
-			let vertexCounter = 0;
-			let groupCount = 0;
+                buffers.uvs.push(ix / plane.gridX, 1 - (iy / plane.gridY));
+                vertexCounter++;
+            }
+        }
 
-			const vector = new THREE.Vector3();
+        for (let iy = 0; iy < plane.gridY; iy++) {
+            for (let ix = 0; ix < plane.gridX; ix++) {
+                const a = buffers.numberOfVertices + ix + gridX1 * iy;
+                const b = buffers.numberOfVertices + ix + gridX1 * (iy + 1);
+                const c = buffers.numberOfVertices + (ix + 1) + gridX1 * (iy + 1);
+                const d = buffers.numberOfVertices + (ix + 1) + gridX1 * iy;
+                buffers.indices.push(a, b, d, b, c, d);
+                groupCount += 6;
+            }
+        }
 
-			// generate vertices, normals and uvs
-
-			for ( let iy = 0; iy < gridY1; iy ++ ) {
-
-				const y = iy * segmentHeight - heightHalf;
-
-				for ( let ix = 0; ix < gridX1; ix ++ ) {
-
-					const x = ix * segmentWidth - widthHalf;
-
-					// set values to correct vector component
-
-					vector[ u ] = x * udir + offsetY;
-					vector[ v ] = y * vdir + offsetV;
-					vector[ w ] = depthHalf + offsetW;
-
-					// now apply vector to vertex buffer
-
-					vertices.push( vector.x, vector.y, vector.z );
-
-					// set values to correct vector component
-
-					vector[ u ] = 0;
-					vector[ v ] = 0;
-					vector[ w ] = depth > 0 ? 1 : - 1;
-
-					// now apply vector to normal buffer
-
-					normals.push( vector.x, vector.y, vector.z );
-
-					// uvs
-
-					uvs.push( ix / gridX );
-					uvs.push( 1 - ( iy / gridY ) );
-
-					// counters
-
-					vertexCounter += 1;
-
-				}
-
-			}
-
-			// indices
-
-			// 1. you need three indices to draw a single face
-			// 2. a single segment consists of two faces
-			// 3. so we need to generate six (2*3) indices per segment
-
-			for ( let iy = 0; iy < gridY; iy ++ ) {
-
-				for ( let ix = 0; ix < gridX; ix ++ ) {
-
-					const a = numberOfVertices + ix + gridX1 * iy;
-					const b = numberOfVertices + ix + gridX1 * ( iy + 1 );
-					const c = numberOfVertices + ( ix + 1 ) + gridX1 * ( iy + 1 );
-					const d = numberOfVertices + ( ix + 1 ) + gridX1 * iy;
-
-					// faces
-
-					indices.push( a, b, d );
-					indices.push( b, c, d );
-
-					// increase counter
-
-					groupCount += 6;
-
-				}
-
-			}
-
-			// add a group to the geometry. this will ensure multi material support
-
-			scope.addGroup( groupStart, groupCount, materialIndex );
-
-			// calculate new start value for groups
-
-			groupStart += groupCount;
-
-			// update total number of vertices
-
-			numberOfVertices += vertexCounter;
-
-		}
+        geometry.addGroup(buffers.groupStart, groupCount, plane.materialIndex);
+        buffers.groupStart += groupCount;
+        buffers.numberOfVertices += vertexCounter;
     }
 }

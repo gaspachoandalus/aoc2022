@@ -6,6 +6,10 @@ export type Status = {
     part2: number;
 }
 
+export const config = {
+    type: "2D"
+};
+
 enum Layers {
     rocks = 0,
     falling = 1,
@@ -28,15 +32,27 @@ export class AOC {
     async Run(lines: string[]): Promise<Status | undefined> {
 
         this.parse(lines);
+        const initialBounds = [...this.map.values(), this.start].reduce((bounds, pos) => ({
+            min: {
+                x: Math.min(bounds.min.x, pos.x),
+                y: Math.min(bounds.min.y, pos.y)
+            },
+            max: {
+                x: Math.max(bounds.max.x, pos.x + 1),
+                y: Math.max(bounds.max.y, pos.y + 1)
+            }
+        }), {
+            min: { x: this.start.x, y: this.start.y },
+            max: { x: this.start.x + 1, y: this.start.y + 1 }
+        });
 
         await this.display
             .init(95)
-            .setLayer(Layers.rocks, "rocks", { style: { bgColor: Colors.white } })
-            .setLayer(Layers.still, "still", { style: { bgColor: Colors.yellow } })
-            .setLayer(Layers.falling, "falling", { style: { bgColor: Colors.blue } })
+            .setLayer(Layers.rocks, "Rock formations", { style: { bgColor: Colors.white } })
+            .setLayer(Layers.still, "Settled sand", { style: { bgColor: Colors.yellow } })
+            .setLayer(Layers.falling, "Falling sand", { style: { bgColor: Colors.blue } })
             .setItems(this.map.values())
-            .setBoundaries({ min: { x: 450, y: 0 }, max: { x: 500, y: 800 } })
-            .setBoundaries()
+            .fitBounds(initialBounds)
 
         const status = await this.pour();
 
@@ -60,7 +76,7 @@ export class AOC {
             await this.display
                 .setItems(falling, Layers.falling)
                 .setTitle(`iteration ${iteration}, falling: ${falling.length}`)
-                .throttle();
+                .checkpoint();
 
             // move each falling grain
             for (let grainIdx = 0; grainIdx < falling.length; grainIdx++) {

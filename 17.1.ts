@@ -6,6 +6,10 @@ export type Status = {
     part2?: number;
 }
 
+export const config = {
+    type: "2D"
+};
+
 const shapes = [
 
     [
@@ -57,14 +61,12 @@ export class AOC {
 
         this.display
             .init(95)
-            .setLayer(0, "shape0", { style: { bgColor: Colors.yellow } })
-            .setLayer(1, "shape1", { style: { bgColor: Colors.blue } })
-            .setLayer(2, "shape2", { style: { bgColor: Colors.green } })
-            .setLayer(3, "shape3", { style: { bgColor: Colors.white } })
-            .setLayer(4, "shape4", { style: { bgColor: Colors.red } })
-            // .setBoundaries({ min: { x: 450, y: 0 }, max: { x: 500, y: 0 } })
-            // .setItems(this.map.values())
-            // .setItems(this.occupied.values());
+            .setLayer(0, "Horizontal bar", { style: { bgColor: Colors.yellow } })
+            .setLayer(1, "Plus", { style: { bgColor: Colors.blue } })
+            .setLayer(2, "Reverse L", { style: { bgColor: Colors.green } })
+            .setLayer(3, "Vertical bar", { style: { bgColor: Colors.white } })
+            .setLayer(4, "Square", { style: { bgColor: Colors.red } })
+        this.display.fitBounds({ min: { x: 0, y: 0 }, max: { x: 7, y: 10 } });
 
         for (let i = 0; i < 2022; i++) {
             // console.log("simulateRock", i);
@@ -90,7 +92,7 @@ export class AOC {
         }
         while (this.fallDown());
 
-        await this.display.throttle();
+        await this.display.checkpoint();
         // this.display(10, 10);
         this.save();
         // this.display(this.top + 2, 25);

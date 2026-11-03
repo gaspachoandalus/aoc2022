@@ -19,7 +19,7 @@ export class Checkpoint {
         this.maxPerSeconds = maxPerSeconds;
     }
 
-    static async throttle(maxPerSeconds:number, ratio: number = 1): Promise<void> {
+    static async checkpoint(maxPerSeconds:number): Promise<void> {
 
         if (Pause.paused()) {
             return await Pause.wait();
@@ -36,16 +36,14 @@ export class Checkpoint {
 
             this._countPerSecond = this.items.length / (this.items[this.items.length - 1] - this.items[0]) * 1000;
 
-            if (this.items.length > 1) {
-                const meanDelay = (this.items[this.items.length - 1] - this.items[0]) / this.items.length;
-                if (now - this.lastSleep > 1000/30) {
-                    this.lastSleep = now;
-                    await sleep(0);
-                }
-                else if (maxPerSeconds != -1 && meanDelay < minDelayMs) {
-                    this.lastSleep = now;
-                    await sleep(minDelayMs - deltaTime);
-                }
+            // every checkpoint must be at least minDelayMs after the previous one
+            if (maxPerSeconds != -1 && this.lastCheckPoint && deltaTime < minDelayMs) {
+                this.lastSleep = now;
+                await sleep(minDelayMs - deltaTime);
+            }
+            else if (now - this.lastSleep > 1000/30) {
+                this.lastSleep = now;
+                await sleep(0);
             }
 
             this.lastCheckPoint = performance.now();

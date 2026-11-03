@@ -6,7 +6,12 @@ export type Status = {
     part2: number;
 }
 
+export const config = {
+    type: "2D"
+};
+
 const CRT_WIDTH = 40;
+const CRT_HEIGHT = 6;
 
 export class AOC {
 
@@ -25,6 +30,15 @@ export class AOC {
         let accumulator = 0;
 
         this.display.init(20);
+        this.display
+            .setLayer(0, "CRT image")
+            .setLayer(1, "Current beam pixel")
+            .setLayer(2, "Beam scan window")
+            .setLayer(3, "Sprite center (register)");
+        this.display.fitBounds({
+            min: { x: 0, y: 0 },
+            max: { x: CRT_WIDTH, y: CRT_HEIGHT }
+        });
 
         for (let line of lines) {
 
@@ -96,6 +110,6 @@ export class AOC {
                 {x: (this.crtPosition + 1) % CRT_WIDTH, y: Math.floor((this.crtPosition + 1) / CRT_WIDTH)}
             ], 2)
             .setItems(items)
-            .throttle();
+            .checkpoint();
     }
 }

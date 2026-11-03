@@ -1,29 +1,37 @@
 import * as dat from "lil-gui";
 import { Vector, center, distance, lerp } from "./vector.js";
-import { ItemHashStore } from "./ItemHashStore.js";
-import { Quadtree, Rectangle, DebugRectangle } from "./QuadTree.js";
+import { Quadtree, Rectangle } from "./QuadTree.js";
 import { Display2D, Style, Colors } from "./Display2D.js";
 import { Checkpoint } from "./Checkpoint.js";
 import Stats from 'three/examples/jsm/libs/stats.module.js';
 import { Pause } from "./Pause.js";
 import { Log } from "./Log.js";
+import { getThrottleLimit, MAX_PREVIEW_ITERATIONS_PER_SECOND } from "./DisplayOptions.js";
+import type { DisplayOptions } from "./DisplayOptions.js";
+import { createDisplayControlsHelp } from "./DisplayControlsHelp.js";
 
 export interface VectorWithContent extends Vector {
     content?: string;
 }
 
-const max_maxIterationsPerSecond = 1000;
+type StoredItem = VectorWithContent & { sequence: number };
 
-enum Storage {
-    Hash,
-    Quadtree
-};
+// Wheel changes carry a discrete target; pinch changes stay continuous.
+type ScaleChange =
+    | { kind: "wheel", center: Vector, targetStepIndex: number }
+    | { kind: "continuous", center: Vector, increase: number };
 
-const storage: Storage = Storage.Quadtree;
+const MIN_SCALE_LEVEL = 0.1;
+const ZOOM_STEP = 0.05;
+const MIN_WHEEL_ZOOM_STEP_INDEX = Math.ceil(MIN_SCALE_LEVEL / ZOOM_STEP);
+// Preserve the renderer's quadratic relationship between zoom level and scale.
+const SCALE_LEVEL_EXPONENT = 2;
+
+// rgb of the quadtree outline of each layer, the index wraps around
+const quadtreeColors = ["0, 255, 255", "255, 0, 255", "255, 160, 0", "128, 255, 0"];
 
 type Layer = {
-    itemStore: ItemHashStore;
-    quadtree: Quadtree<VectorWithContent>;
+    quadtree: Quadtree<StoredItem>;
     initialized: boolean; // layer initialized once ?
     config: { defaultChar?: string, style?: Style };
     visible: boolean;
@@ -38,12 +46,13 @@ type Layer = {
 export class DisplayWeb2D implements Display2D {
 
     canvas: HTMLCanvasElement = null;
-    stats1: Stats.Panel;
+    stats1?: Stats.Panel;
 
     scale = 1;
     scaleLevel = 1;
-    scaleChange: { center: Vector, increase: number } = null;
+    scaleChange: ScaleChange = null;
     boundaries: Vector = { x: 0, y: 0 };
+    private wheelZoomStepIndex: number | null = null;
     private scrollIntoViewRunning: {
         start: Vector,
         end: Vector,
@@ -51,18 +60,20 @@ export class DisplayWeb2D implements Display2D {
         currentDuration: number,
         smooth: boolean
     } = null;
-    private layersGui: dat.GUI;
+    private layersGui?: dat.GUI;
+    private readonly options: DisplayOptions;
 
     readonly simulation = {
         maxIterationsPerSecond: 200,
-        display: null as Display2D,
+        display: null as DisplayWeb2D,
         get pause(): boolean {
             return Pause.paused();
         },
         set pause(value: boolean) {
             Pause.toggle();
         },
-        stats: true,
+        stats: false,
+        showQuadtree: false,
         get boundaries() {
             return this.display.displayCoordinates(this.display.boundaries);
         },
@@ -79,38 +90,42 @@ export class DisplayWeb2D implements Display2D {
 
     private layers: Array<Layer> = Array(4);
 
+    // write order of the items, the newest one is drawn on top
+    private itemSequence = 0;
+
     public static create() {
 
         return new DisplayWeb2D();
     }
 
-    public constructor() {
+    public constructor(options: DisplayOptions = {}) {
 
+        this.options = options;
+        if (options.preview) {
+            this.scale = options.previewZoom ?? 1;
+            this.scaleLevel = Math.pow(this.scale, 1 / SCALE_LEVEL_EXPONENT);
+        }
         this.layers = [
             {
-                itemStore: storage == Storage.Hash ? new ItemHashStore() : null,
-                quadtree: storage == Storage.Quadtree ? this.createQuadtree() : null,
+                quadtree: this.createQuadtree(),
                 config: {},
                 initialized: true,
                 visible: true
             },
             {
-                itemStore: storage == Storage.Hash ? new ItemHashStore() : null,
-                quadtree: storage == Storage.Quadtree ? this.createQuadtree() : null,
+                quadtree: this.createQuadtree(),
                 config: {},
                 initialized: true,
                 visible: true
             },
             {
-                itemStore: storage == Storage.Hash ? new ItemHashStore() : null,
-                quadtree: storage == Storage.Quadtree ? this.createQuadtree() : null,
+                quadtree: this.createQuadtree(),
                 config: {},
                 initialized: true,
                 visible: true
             },
             {
-                itemStore: storage == Storage.Hash ? new ItemHashStore() : null,
-                quadtree: storage == Storage.Quadtree ? this.createQuadtree() : null,
+                quadtree: this.createQuadtree(),
                 config: {},
                 initialized: true,
                 visible: true
@@ -126,7 +141,10 @@ export class DisplayWeb2D implements Display2D {
 
     public init(iterationsPerSecond?: number): Display2D {
 
-        this.simulation.maxIterationsPerSecond = iterationsPerSecond ?? 100;
+        const requestedRate = iterationsPerSecond ?? 100;
+        this.simulation.maxIterationsPerSecond = this.options.preview
+            ? this.options.previewIterationsPerSecond ?? requestedRate
+            : requestedRate;
 
         if (this.canvas) {
             return this;
@@ -136,36 +154,61 @@ export class DisplayWeb2D implements Display2D {
 
         this.canvas = document.createElement("canvas");
         this.canvas.id = "canvas";
+        this.canvas.dataset.aocRenderer = "true";
         this.canvas.width = document.body.clientWidth;
         this.canvas.height = document.body.clientHeight;
 
         document.body.appendChild(this.canvas);
+        const context = this.canvas.getContext("2d");
+        if (!context) {
+            throw new Error("Unable to create a 2D canvas context");
+        }
+        this.updateCharSize(context);
+
+        if (!this.options.preview) {
+            document.body.appendChild(createDisplayControlsHelp("2d", [
+                { label: "Mouse", description: "Drag to pan; scroll to zoom around the pointer." },
+                { label: "Touch", description: "One finger to pan; pinch to zoom." },
+                { label: "Space", description: "Pause or resume the simulation.", key: true },
+                { label: "L", description: "Advance one step.", key: true }
+            ]));
+        }
 
         window.requestAnimationFrame(this.animate.bind(this));
 
-        // stats
+        if (!this.options.preview) {
+            // stats
 
-        this.stats1 = new (Stats as any)();
-        this.stats1.dom.id = "stats";
-        document.body.appendChild(this.stats1.dom);
+            this.stats1 = new (Stats as any)();
+            this.stats1.dom.id = "stats";
+            this.stats1.dom.classList.add("hidden");
+            const overlays = document.getElementById("simulation-overlays");
+            if (!overlays) {
+                throw new Error("Missing simulation overlays element.");
+            }
+            overlays.appendChild(this.stats1.dom);
 
-        // dat.gui
-        const gui = new dat.GUI();
-        const simulationFolder = gui.addFolder('Simulation');
-        this.simulation.display = this;
-        simulationFolder.add(this.simulation, "pause").name("paused").listen().onChange(value => {
-            value ? Pause.pause() : Pause.continue();
-        });
-        simulationFolder.add(this.simulation, "stats").name("show stats").listen().onChange(value => {
-            value ? this.stats1.dom.classList.remove("hidden") : this.stats1.dom.classList.add("hidden");
-        });;;
-        simulationFolder.add(this.simulation, 'maxIterationsPerSecond', 0, max_maxIterationsPerSecond, 1).name("max iterations/s");
-        simulationFolder.add(this.simulation, 'boundaries').name("top left corner").disable().listen();
-        simulationFolder.add(this.simulation, 'size').name("size in chars").disable().listen().decimals(2);
-        simulationFolder.add(this.simulation, 'scale').name("scale").disable().listen().decimals(2);
-        simulationFolder.open()
+            // dat.gui
+            const gui = new dat.GUI();
+            const simulationFolder = gui.addFolder('Simulation');
+            this.simulation.display = this;
+            simulationFolder.add(this.simulation, "pause").name("paused").listen().onChange(value => {
+                value ? Pause.pause() : Pause.continue();
+            });
+            simulationFolder.add(this.simulation, 'maxIterationsPerSecond', 0, MAX_PREVIEW_ITERATIONS_PER_SECOND, 1).name("max iterations/s");
+            simulationFolder.add(this.simulation, 'boundaries').name("top left corner").disable().listen();
+            simulationFolder.add(this.simulation, 'size').name("size in chars").disable().listen().decimals(2);
+            simulationFolder.add(this.simulation, 'scale').name("scale").disable().listen().decimals(2);
+            simulationFolder.open()
 
-        this.layersGui = gui.addFolder("layers");
+            const debugFolder = gui.addFolder('Debug');
+            debugFolder.add(this.simulation, "stats").name("show FPS").listen().onChange(value => {
+                this.stats1.dom.classList.toggle("hidden", !value);
+            });
+            debugFolder.add(this.simulation, "showQuadtree").name("show quadtree").listen();
+
+            this.layersGui = gui.addFolder("layers");
+        }
 
         // events
 
@@ -210,6 +253,12 @@ export class DisplayWeb2D implements Display2D {
             ),
             pos);
 
+        if (this.options.preview) {
+            this.boundaries = newBoundaries;
+            this.scrollIntoViewRunning = null;
+            return this;
+        }
+
         this.scrollIntoViewRunning = {
             start: {...this.boundaries},
             end: { ...newBoundaries },
@@ -227,24 +276,85 @@ export class DisplayWeb2D implements Display2D {
         return this;
     }
 
-    public setBoundaries(boundaries?: { min: Vector, max: Vector }): Display2D {
+    public fitBounds(bounds?: { min: Vector, max: Vector }): Display2D {
+        const fittedBounds = bounds ?? this.getContentBounds();
+        if (!fittedBounds) {
+            throw new RangeError("No display content is available to fit; provide explicit bounds.");
+        }
 
-        if (!boundaries) {
-            // TODO: merge all layers
-            const bounds = this.layers[0].quadtree.getBounds();
-            this.boundaries = bounds.min;
-            console.log(`boundaries: ${JSON.stringify(bounds)}`);
-            // TODO: determine zoom level required to fit max
+        const boundsWidth = fittedBounds.max.x - fittedBounds.min.x;
+        const boundsHeight = fittedBounds.max.y - fittedBounds.min.y;
+        if (
+            ![
+                fittedBounds.min.x,
+                fittedBounds.min.y,
+                fittedBounds.max.x,
+                fittedBounds.max.y
+            ].every(Number.isFinite)
+            || boundsWidth <= 0
+            || boundsHeight <= 0
+        ) {
+            throw new RangeError("Display bounds must be finite and have positive dimensions.");
         }
-        else {
-            this.boundaries = boundaries.min;
+        if (!this.canvas) {
+            throw new Error("Initialize the 2D display before fitting bounds.");
         }
+        const context = this.canvas.getContext("2d");
+        if (!context) {
+            throw new Error("Unable to create a 2D canvas context");
+        }
+
+        const fitScale = Math.min(
+            this.canvas.width * 0.8 / (boundsWidth * this.charSize.x),
+            this.canvas.height * 0.8 / (boundsHeight * this.charSize.y)
+        );
+        const maximumFitScale = Math.max(0.01, Math.min(this.scale, fitScale));
+        // Snap down to a wheel stop so rounding never crops the requested bounds.
+        this.wheelZoomStepIndex = Math.max(
+            MIN_WHEEL_ZOOM_STEP_INDEX,
+            Math.floor(
+                Math.pow(maximumFitScale, 1 / SCALE_LEVEL_EXPONENT) / ZOOM_STEP + 1e-9
+            )
+        );
+        this.scaleLevel = this.wheelZoomStepIndex * ZOOM_STEP;
+        this.scale = Math.pow(this.scaleLevel, SCALE_LEVEL_EXPONENT);
+        this.scaleChange = null;
+        this.scrollIntoViewRunning = null;
+
+        this.boundaries = {
+            x: (fittedBounds.min.x + fittedBounds.max.x) / 2 - this.canvas.width / this.scale / this.charSize.x / 2,
+            y: (fittedBounds.min.y + fittedBounds.max.y) / 2 - this.canvas.height / this.scale / this.charSize.y / 2
+        };
+
+        context.setTransform(this.scale, 0, 0, this.scale, 0, 0);
 
         return this;
     }
 
+    private getContentBounds(): { min: Vector, max: Vector } | null {
+        let bounds: { min: Vector, max: Vector } | null = null;
+        for (const layer of this.layers) {
+            const layerBounds = layer?.quadtree.getBounds();
+            if (!layerBounds) {
+                continue;
+            }
+            if (!bounds) {
+                bounds = {
+                    min: { ...layerBounds.min },
+                    max: { ...layerBounds.max }
+                };
+                continue;
+            }
+            bounds.min.x = Math.min(bounds.min.x, layerBounds.min.x);
+            bounds.min.y = Math.min(bounds.min.y, layerBounds.min.y);
+            bounds.max.x = Math.max(bounds.max.x, layerBounds.max.x);
+            bounds.max.y = Math.max(bounds.max.y, layerBounds.max.y);
+        }
+        return bounds;
+    }
+
     private createQuadtree() {
-        return Quadtree.create<VectorWithContent>(new Rectangle(-1024, -1024, 2048, 2048))
+        return Quadtree.create<StoredItem>();
     }
 
     private createLayer(layer: number) {
@@ -255,8 +365,7 @@ export class DisplayWeb2D implements Display2D {
                 lastRender: null,
                 visible: true,
                 name: layer.toString(),
-                itemStore: storage == Storage.Hash ? new ItemHashStore() : null,
-                quadtree: storage == Storage.Quadtree ? this.createQuadtree() : null,
+                quadtree: this.createQuadtree(),
             }
         }
     }
@@ -277,6 +386,10 @@ export class DisplayWeb2D implements Display2D {
     }
 
     private addLayerGui(layerId: number) {
+        if (this.options.preview) {
+            return;
+        }
+
         const layer = this.layers[layerId];
         if (!layer.guiFolder) {
             const name = layer.name ?? `${layerId}`;
@@ -296,14 +409,9 @@ export class DisplayWeb2D implements Display2D {
         this.createLayer(layerId);
         this.addLayerGui(layerId);
 
-        if (storage == Storage.Hash) {
-            this.layers[layerId].itemStore.setItems(items);
-        }
-        else {
-            this.layers[layerId].quadtree.clear();
-            for (const item of items) {
-                this.layers[layerId].quadtree.insert(new Rectangle(item.x, item.y, item.content?.length ?? 1, 1), { ...item });
-            }
+        this.layers[layerId].quadtree.clear();
+        for (const item of items) {
+            this.layers[layerId].quadtree.insert(new Rectangle(item.x, item.y, item.content?.length ?? 1, 1), { ...item, sequence: ++this.itemSequence });
         }
         return this;
     }
@@ -312,13 +420,8 @@ export class DisplayWeb2D implements Display2D {
         this.createLayer(layerId);
         this.addLayerGui(layerId);
 
-        if (storage == Storage.Hash) {
-            this.layers[layerId].itemStore.addItems(items);
-        }
-        else {
-            for (const item of items) {
-                this.layers[layerId].quadtree.insert(new Rectangle(item.x, item.y, item.content?.length ?? 1, 1), { ...item });
-            }
+        for (const item of items) {
+            this.layers[layerId].quadtree.insert(new Rectangle(item.x, item.y, item.content?.length ?? 1, 1), { ...item, sequence: ++this.itemSequence });
         }
         return this;
     }
@@ -332,13 +435,9 @@ export class DisplayWeb2D implements Display2D {
         return this;
     }
 
-    public throttle(ratio?: number): Promise<void> {
+    public checkpoint(): Promise<void> {
 
-        return Checkpoint.throttle(
-            this.simulation.maxIterationsPerSecond == max_maxIterationsPerSecond
-                ? -1
-                : this.simulation.maxIterationsPerSecond
-        );
+        return Checkpoint.checkpoint(getThrottleLimit(this.simulation.maxIterationsPerSecond));
     }
 
     public log(text: string): Display2D {
@@ -357,87 +456,94 @@ export class DisplayWeb2D implements Display2D {
         const now = performance.now();
         const delta = (now - this.previous) / 1000; // delta in seconds
 
-        // move viewport
-
-        if (this.scrollIntoViewRunning) {
-
-            this.scrollIntoViewRunning.currentDuration += delta;
-
-            if (this.scrollIntoViewRunning.currentDuration >= this.scrollIntoViewRunning.totalDuration || false === this.scrollIntoViewRunning.smooth) {
-                this.boundaries = { ...this.scrollIntoViewRunning.end };
-                this.scrollIntoViewRunning = null;
-            }
-            else {
-                let animationDelta = this.scrollIntoViewRunning.currentDuration / this.scrollIntoViewRunning.totalDuration;
-                animationDelta = animationDelta * animationDelta * animationDelta * (animationDelta * (6.0 * animationDelta - 15.0) + 10.0); // smooth lerp, see https://chicounity3d.wordpress.com/2014/05/23/how-to-lerp-like-a-pro/
-                console.assert(animationDelta >= 0 && animationDelta <= 1);
-                this.boundaries = lerp(this.scrollIntoViewRunning.start, this.scrollIntoViewRunning.end, animationDelta);
-            }
-        }
-
-        // prepare drawing context
+        this.updateViewport(delta);
 
         const ctx = this.canvas.getContext("2d");
-
-        // update scale
-
-        if (this.scaleChange) {
-
-            const zoomCharPos = this.mouseCoordinatesToCharCoordinates(this.scaleChange.center);
-
-            this.scaleLevel += this.scaleChange.increase;
-            this.scaleLevel = Math.max(this.scaleLevel, .1);
-
-            this.scale = Math.pow(this.scaleLevel, 2);
-            ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
-
-            // set boundary so zoom point doesn't move
-            this.boundaries = {
-                x: zoomCharPos.x - (this.scaleChange.center.x / this.scale / this.charSize.x),
-                y: zoomCharPos.y - (this.scaleChange.center.y / this.scale / this.charSize.y)
-            }
-
-            this.scaleChange = null;
-        }
-
-        // draw
-
+        this.applyScaleChange(ctx);
         this.draw(ctx);
-
-        // console.log(`retrieved items`, countByLayer);
-
-        // update log
-        Log.update();
-
-        // update stats
-
-        this.stats1.update(undefined, undefined);
-
-        // request next frame
+        this.updateOverlays();
 
         this.previous = performance.now();
         window.requestAnimationFrame(this.animate.bind(this));
     }
 
+    /** Advances the eased viewport movement requested by scrollIntoView. */
+    private updateViewport(delta: number): void {
+        const movement = this.scrollIntoViewRunning;
+        if (!movement) {
+            return;
+        }
+
+        movement.currentDuration += delta;
+        if (movement.currentDuration >= movement.totalDuration || !movement.smooth) {
+            this.boundaries = { ...movement.end };
+            this.scrollIntoViewRunning = null;
+            return;
+        }
+
+        let animationDelta = movement.currentDuration / movement.totalDuration;
+        animationDelta = animationDelta * animationDelta * animationDelta
+            * (animationDelta * (6.0 * animationDelta - 15.0) + 10.0);
+        console.assert(animationDelta >= 0 && animationDelta <= 1);
+        this.boundaries = lerp(movement.start, movement.end, animationDelta);
+    }
+
+    /** Applies pending zoom while keeping the pointer anchored to the same world point. */
+    private applyScaleChange(ctx: CanvasRenderingContext2D): void {
+        const change = this.scaleChange;
+        if (!change) {
+            return;
+        }
+
+        const zoomCharPos = this.mouseCoordinatesToCharCoordinates(change.center);
+        if (change.kind === "wheel") {
+            this.scaleLevel = change.targetStepIndex * ZOOM_STEP;
+            this.scale = Math.pow(this.scaleLevel, SCALE_LEVEL_EXPONENT);
+        } else {
+            this.scaleLevel = Math.max(this.scaleLevel + change.increase, MIN_SCALE_LEVEL);
+            this.scale = Math.pow(this.scaleLevel, SCALE_LEVEL_EXPONENT);
+            this.resetWheelZoomStepIndex();
+        }
+        ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+
+        this.boundaries = {
+            x: zoomCharPos.x - (change.center.x / this.scale / this.charSize.x),
+            y: zoomCharPos.y - (change.center.y / this.scale / this.charSize.y)
+        };
+        this.scaleChange = null;
+    }
+
+    /** Defers wheel-step alignment until after a continuous pinch changes the scale. */
+    private resetWheelZoomStepIndex(): void {
+        this.wheelZoomStepIndex = null;
+    }
+
+    /** Refreshes the simulation trace and optional FPS overlay after each rendered frame. */
+    private updateOverlays(): void {
+        Log.update();
+
+        if (this.simulation.stats) {
+            this.stats1?.update(undefined, undefined);
+        }
+    }
+
     private draw(ctx: CanvasRenderingContext2D) {
+
+        if (this.options.preview) {
+            ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+            ctx.globalAlpha = 1;
+        }
 
         // clear drawing context
 
         ctx.fillStyle = "black";
         ctx.fillRect(0, 0, this.canvas.width / this.scale, this.canvas.height / this.scale);
         // ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        ctx.font = "normal 15px courier new";
         ctx.textAlign = "left";
 
         // measures
 
-        const metrics = ctx.measureText("#");
-        this.charSize = {
-            x: Math.abs(metrics.actualBoundingBoxLeft) + Math.abs(metrics.actualBoundingBoxRight),
-            y: metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent
-        };
-
-        let countByLayer = {};
+        const metrics = this.updateCharSize(ctx);
 
         const width = this.canvas.width / this.scale / this.charSize.x;
         const height = this.canvas.height / this.scale / this.charSize.y;
@@ -447,54 +553,84 @@ export class DisplayWeb2D implements Display2D {
             if (!layer)
                 continue;
 
-            const items = storage == Storage.Quadtree
-                ? layer.quadtree.retrieve(viewportRect)
-                : layer.itemStore.getVisibleItemsGenerator(this.boundaries.x, this.boundaries.y, width, height);
+            this.drawLayer(ctx, parseInt(index), layer, viewportRect, metrics);
+        }
 
-            for (const item of items) {
+        if (this.simulation.showQuadtree) {
+            this.drawQuadtreeNodes(ctx, viewportRect);
+        }
+    }
 
-                let content: string;
-                let rectangle: Rectangle;
+    /** Draws one layer in write order so later items cover earlier cells and backgrounds. */
+    private drawLayer(
+        ctx: CanvasRenderingContext2D,
+        layerIndex: number,
+        layer: Layer,
+        viewportRect: Rectangle,
+        metrics: TextMetrics,
+    ): void {
+        const items = Array.from(layer.quadtree.retrieveObjects(viewportRect))
+            .sort((a, b) => a.sequence - b.sequence);
+        ctx.globalAlpha = layerIndex === 0 ? 1 : 0.5;
 
-                if (item instanceof DebugRectangle) {
-                    ctx.strokeStyle = ["red", "blue", "grey", "green"][index];
+        const bgColor = layer.config?.style?.bgColor;
+        const cells = new Map<string, { x: number, y: number, char: string | null }>();
+        for (const item of items) {
+            const text = item.content ?? layer.config?.defaultChar;
+            const length = (text ?? "#").length;
 
-                    const pos = this.charToCanvasCoordinates(item.bounds.x, item.bounds.y);
-                    ctx.beginPath();
-                    ctx.rect(pos.x, pos.y, item.bounds.width * this.charSize.x, item.bounds.height * this.charSize.y);
-                    ctx.stroke();
-                    continue;
-                }
-                else if (item instanceof Rectangle) {
-                    rectangle = item;
-                }
-                else {
-                    content = item.content;
-                    const stringWidth = (content ?? layer.config?.defaultChar ?? "#").length;
-                    rectangle = new Rectangle(item.x, item.y, stringWidth, 1);
-                }
-
-                countByLayer[index] = (countByLayer[index] ?? 0) + 1;
+            if (bgColor) {
                 const pos = this.charToCanvasCoordinates(item.x, item.y);
+                ctx.fillStyle = `rgb(${bgColor.r},${bgColor.g},${bgColor.b})`;
+                ctx.fillRect(pos.x, pos.y, length * this.charSize.x, this.charSize.y);
+            }
 
-                ctx.globalAlpha = parseInt(index) == 0 ? 1 : 0.5;
+            if (!text && !bgColor) {
+                continue;
+            }
 
-                if (layer.config?.style?.bgColor) {
-                    ctx.fillStyle = layer.config?.style?.bgColor
-                        // ? `rgba(${layer.config.style.bgColor.r},${layer.config.style.bgColor.g},${layer.config.style.bgColor.b},127)`
-                        ? `rgb(${layer.config.style.bgColor.r},${layer.config.style.bgColor.g},${layer.config.style.bgColor.b})`
-                        : "rgb(255, 255, 255)";
+            for (let dx = 0; dx < length; dx++) {
+                cells.set(`${item.x + dx},${item.y}`, {
+                    x: item.x + dx,
+                    y: item.y,
+                    char: text ? text[dx] : null
+                });
+            }
+        }
 
-                    ctx.fillRect(pos.x, pos.y, rectangle.width * this.charSize.x, rectangle.height * this.charSize.y);
-                }
+        ctx.fillStyle = layer.config?.style?.color
+            ? `rgb(${layer.config.style.color.r},${layer.config.style.color.g},${layer.config.style.color.b})`
+            : `rgb(0, 0, 0)`;
 
-                if (content ?? layer.config?.defaultChar) {
-                    ctx.fillStyle = layer.config?.style?.color
-                        ? `rgb(${layer.config.style.color.r},${layer.config.style.color.g},${layer.config.style.color.b})`
-                        : `rgb(0, 0, 0)`;
+        for (const cell of cells.values()) {
+            if (cell.char === null) {
+                continue;
+            }
 
-                    ctx.fillText(content ?? layer.config?.defaultChar ?? "#", pos.x, pos.y + this.charSize.y - metrics.fontBoundingBoxDescent);
-                }
+            const pos = this.charToCanvasCoordinates(cell.x, cell.y);
+            ctx.fillText(cell.char, pos.x, pos.y + this.charSize.y - metrics.fontBoundingBoxDescent);
+        }
+    }
+
+    /**
+     * outlines the nodes of every layer quadtree, one color per layer, filled nodes are more opaque
+     * @param ctx drawing context, already scaled
+     * @param viewportRect visible area in chars
+     */
+    private drawQuadtreeNodes(ctx: CanvasRenderingContext2D, viewportRect: Rectangle) {
+
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 1 / this.scale;
+
+        for (const [index, layer] of this.layers.entries()) {
+            if (!layer)
+                continue;
+
+            const rgb = quadtreeColors[index % quadtreeColors.length];
+            for (const node of layer.quadtree.overlappingNodes(viewportRect)) {
+                const pos = this.charToCanvasCoordinates(node.bounds.x, node.bounds.y);
+                ctx.strokeStyle = `rgba(${rgb}, ${node.filled ? 0.9 : 0.35})`;
+                ctx.strokeRect(pos.x, pos.y, node.bounds.width * this.charSize.x, node.bounds.height * this.charSize.y);
             }
         }
     }
@@ -547,16 +683,35 @@ export class DisplayWeb2D implements Display2D {
         }
     }
 
+    private updateCharSize(ctx: CanvasRenderingContext2D): TextMetrics {
+        ctx.font = "normal 15px courier new";
+        const metrics = ctx.measureText("#");
+        this.charSize = {
+            x: Math.abs(metrics.actualBoundingBoxLeft) + Math.abs(metrics.actualBoundingBoxRight),
+            y: metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent
+        };
+        return metrics;
+    }
+
     private onWindowResize(event: Event): any {
 
         // resize canvas
         this.canvas.width = document.body.clientWidth;
         this.canvas.height = document.body.clientHeight;
 
+        const context = this.canvas.getContext("2d");
+        if (!context) {
+            throw new Error("Unable to create a 2D canvas context");
+        }
+        context.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     }
 
 
     private onKeyDown(event: KeyboardEvent): any {
+        if (event.target instanceof Element
+            && event.target.closest("button, input, select, textarea, summary, [contenteditable='true']")) {
+            return;
+        }
 
         switch (event.code) {
 
@@ -599,6 +754,9 @@ export class DisplayWeb2D implements Display2D {
 
         // Prevent the default behavior to avoid scrolling on touch devices
         // event.preventDefault();
+        if (!this.beginTouch || event.touches.length < this.beginTouch.length) {
+            return;
+        }
 
         if (this.beginTouch && this.beginTouch.length == 1) {
 
@@ -640,9 +798,10 @@ export class DisplayWeb2D implements Display2D {
             Log.log(`distance from ${initialDistance.toFixed(2)} to ${newDistance.toFixed(2)}: ${scaleIncrease.toFixed(2)}`);
 
             if (Math.abs(scaleIncrease) > .05) {
-    
+                this.resetWheelZoomStepIndex();
                 this.scaleChange = {
                     center: center(this.beginTouch[0], this.beginTouch[1]),
+                    kind: "continuous",
                     increase: scaleIncrease
                 };
             }
@@ -653,25 +812,32 @@ export class DisplayWeb2D implements Display2D {
 
         event.preventDefault();
 
-        if (event.deltaY < 0) {
-            this.scaleChange = {
-                center: {
-                    x: event.clientX,
-                    y: event.clientY
-                },
-                increase: .05
-            };
-        }
-        else if (event.deltaY > 0) {
-            this.scaleChange = {
-                center: {
-                    x: event.clientX,
-                    y: event.clientY
-                },
-                increase: -.05
-            };
+        const direction = event.deltaY < 0 ? 1 : event.deltaY > 0 ? -1 : 0;
+        if (direction === 0) {
+            return;
         }
 
+        if (this.scaleChange?.kind === "continuous") {
+            this.resetWheelZoomStepIndex();
+        }
+        if (this.wheelZoomStepIndex === null) {
+            const currentStepIndex = this.scaleLevel / ZOOM_STEP;
+            this.wheelZoomStepIndex = direction > 0
+                ? Math.floor(currentStepIndex + 1e-9)
+                : Math.ceil(currentStepIndex - 1e-9);
+        }
+        this.wheelZoomStepIndex = Math.max(
+            MIN_WHEEL_ZOOM_STEP_INDEX,
+            this.wheelZoomStepIndex + direction
+        );
+        this.scaleChange = {
+            center: {
+                x: event.clientX,
+                y: event.clientY
+            },
+            kind: "wheel",
+            targetStepIndex: this.wheelZoomStepIndex
+        };
     }
 
     private mouseCoordinatesToCharCoordinates(pos: Vector): Vector {

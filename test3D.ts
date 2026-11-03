@@ -2,7 +2,12 @@ import { Colors, Display3D } from "./utils/Display3D.js";
 import { Vector3D } from "./utils/vector.js";
 
 export const config = {
-    type: "3D"
+    type: "3D",
+    cameraFollow: {
+        distanceMultiplier: 1.5,
+        positionDirection: [1, 0.85, 0.25] as const,
+        snapToInitialTarget: true
+    }
 };
 
 export type Status = {
@@ -25,8 +30,7 @@ export class Problem {
 
         this.display.init();
         this.display.start();
-        // this.display.center(0, 0, 0);
-        await this.display.throttle();
+        await this.display.checkpoint();
 
         if (false) {
 
@@ -40,6 +44,12 @@ export class Problem {
             const cubeSize = 5;
             const spaceBetweenCubes = 1;
             const offset = 0;// - (cubes * (cubeSize + spaceBetweenCubes)) / 2;
+
+            this.display.center(
+                (cubeSize - 1) / 2,
+                (cubeSize - 1) / 2,
+                ((cubes - 1) * (cubeSize + spaceBetweenCubes) + cubeSize - 1) / 2 + offset
+            );
     
             for (let cubeIdx = startingGroup; cubeIdx < cubes + startingGroup; cubeIdx++) {
                 this.display.setStyle(cubeIdx, {
@@ -57,7 +67,7 @@ export class Problem {
                         for (let y = 0; y < cubeSize; y++) {
 
                             this.display.addBlock(x, y, (cubeIdx - startingGroup) * (cubeSize + spaceBetweenCubes) + z + offset, cubeIdx);
-                            await this.display.throttle();
+                            await this.display.checkpoint();
                         }
                     }
                 }

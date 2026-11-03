@@ -71,8 +71,13 @@ export class Rectangle {
     }
 }
 
-export class DebugRectangle {
+/**
+ * a node of the Quadtree, as yielded by overlappingNodes()
+ */
+export interface QuadtreeNode {
     bounds: Rectangle;
+    /** every cell of the node is covered by objects */
+    filled: boolean;
 }
 
 /**
@@ -80,16 +85,17 @@ export class DebugRectangle {
  *
  * example
  * 
- * const quadtree = new Quadtree<Point>(0, new Rectangle(0, 0, 800, 600));
+ * const quadtree = Quadtree.create<Point>(new Rectangle(0, 0, 800, 600));
  * quadtree.insert(new Rectangle(10, 10, 20, 20), new Point(10, 10));
  * quadtree.insert(new Rectangle(50, 50, 20, 20), new Point(50, 50));
  * const objectsInArea = quadtree.retrieve(new Rectangle(0, 0, 30, 30));
  * console.log(objectsInArea);
  */
-export class Quadtree<T> {
+export class Quadtree<T extends object> {
     private static MAX_OBJECTS = 10;
-    private static MAX_LEVELS = 8;
-    private static debug = false;
+    private static MAX_LEAF_SIZE = 8;
+    // side of the root created around the first inserted rectangle, it grows when needed
+    private static ROOT_SIZE = 64;
 
     /** objects of this node */
     private objects: Array<{
@@ -97,27 +103,28 @@ export class Quadtree<T> {
         object: T
     }> = [];
     private nodes: Quadtree<T>[] = [];
-    private level: number;
-    private bounds: Rectangle;
+    // null until the first insert when the tree is created without bounds
+    private bounds: Rectangle | null = null;
     private filled: boolean = false;
 
     /**
      * Create QuadTree
+     * The bounds should be a square with a power of 2 side (e.g. 2048) so every split keeps integer leaves.
+     * Without bounds, the root is created at the first insert, on the ROOT_SIZE grid cell containing the top left corner of its rectangle.
+     * The root grows when an item is inserted outside of it.
      */
-    public static create<T>(bounds: Rectangle): Quadtree<T> {
+    public static create<T extends object>(bounds?: Rectangle): Quadtree<T> {
 
-        return new Quadtree<T>(0, bounds);
+        return new Quadtree<T>(bounds ?? null);
 
     }
 
     /**
-     * Constructor to initialize the Quadtree node with a specific level and bounding rectangle
-     * @param level 
+     * Constructor to initialize the Quadtree node with a bounding rectangle
      * @param bounds 
      */
-    private constructor(level: number, bounds: Rectangle) {
-        this.level = level;
-        this.bounds = new Rectangle(bounds.x, bounds.y, bounds.width, bounds.height);
+    private constructor(bounds: Rectangle | null) {
+        this.bounds = bounds ? new Rectangle(bounds.x, bounds.y, bounds.width, bounds.height) : null;
     }
 
     /**
@@ -130,19 +137,15 @@ export class Quadtree<T> {
         const y = this.bounds.y;
 
         this.nodes[Index.northeast] = new Quadtree<T>(
-            this.level + 1,
             new Rectangle(x + subWidth, y, subWidth, subHeight)
         );
         this.nodes[Index.northwest] = new Quadtree<T>(
-            this.level + 1,
             new Rectangle(x, y, subWidth, subHeight)
         );
         this.nodes[Index.southwest] = new Quadtree<T>(
-            this.level + 1,
             new Rectangle(x, y + subHeight, subWidth, subHeight)
         );
         this.nodes[Index.southeast] = new Quadtree<T>(
-            this.level + 1,
             new Rectangle(x + subWidth, y + subHeight, subWidth, subHeight)
         );
     }
@@ -157,12 +160,58 @@ export class Quadtree<T> {
     }
 
     /**
+     * Double the bounds towards the side(s) where the rectangle lies.
+     * The previous content becomes one quadrant of the new root,
+     * and the root keeps its identity for the callers.
+     * @param rectangle the rectangle that must fit in the root
+     */
+    private grow(rectangle: Rectangle): void {
+        const { x, y, width, height } = this.bounds;
+        const westward = rectangle.x < x;
+        const northward = rectangle.y < y;
+
+        const previous = new Quadtree<T>(this.bounds);
+        previous.objects = this.objects;
+        previous.nodes = this.nodes;
+        previous.filled = this.filled;
+
+        // the previous root sits on the opposite side of the growth
+        const index = !northward
+            ? (westward ? Index.northeast : Index.northwest)
+            : (westward ? Index.southeast : Index.southwest);
+
+        this.bounds = new Rectangle(westward ? x - width : x, northward ? y - height : y, 2 * width, 2 * height);
+        this.objects = [];
+        this.nodes = [];
+        this.split();
+        this.nodes[index] = previous;
+        this.filled = false;
+    }
+
+    /**
      * Insert an object with its bounding rectangle into the Quadtree
+     * The root grows when the rectangle lies outside of its bounds
      * @param rectangle 
      * @param object 
      * @returns 
      */
     insert(rectangle: Rectangle, object: T): void {
+
+        // growing could never cover a non finite rectangle, so the loop below would not end
+        if (![rectangle.x, rectangle.y, rectangle.width, rectangle.height].every(Number.isFinite)) {
+            throw new RangeError(`cannot insert rectangle ${rectangle.toString()}`);
+        }
+
+        if (!this.bounds) {
+            // aligned on the ROOT_SIZE grid so that trees created at different points share the same lines
+            const size = Quadtree.ROOT_SIZE;
+            this.bounds = new Rectangle(Math.floor(rectangle.x / size) * size, Math.floor(rectangle.y / size) * size, size, size);
+        }
+
+        // only the root can receive a rectangle outside its bounds, children always contain what they get
+        while (!this.bounds.contains(rectangle)) {
+            this.grow(rectangle);
+        }
 
         // insert object into quadrant
         if (this.isSplitted()) {
@@ -183,24 +232,22 @@ export class Quadtree<T> {
                 value.rectangle.width === rectangle.width &&
                 value.rectangle.height === rectangle.height
         })
-        if (!existingObject) {
+        // an object inserted again at the same rectangle replaces the previous one
+        if (existingObject) {
+            existingObject.object = {...object};
+        } else {
             this.objects.push({
                 rectangle: new Rectangle(rectangle.x, rectangle.y, rectangle.width, rectangle.height),
                 object: {...object}
             });
         }
 
-        // If the node has exceeded the maximum number of objects and hasn't reached the maximum depth,
+        // If the node has exceeded the maximum number of objects and is larger than the minimum leaf size,
         // split the node and redistribute the objects to child nodes   
-        if (this.objects.length > Quadtree.MAX_OBJECTS && this.level < Quadtree.MAX_LEVELS) {
+        // objects that fit no child stay here, so redistribution only has to run right after the split
+        if (this.objects.length > Quadtree.MAX_OBJECTS && this.isLargerThanLeaf() && !this.isSplitted()) {
 
-            if (Quadtree.debug) {
-                console.log(`${this.bounds.toString()}:${this.level} splitting ${this.objects.length} objects`);
-            }
-
-            if (!this.isSplitted()) {
-                this.split();
-            }
+            this.split();
 
             let i = 0;
             while (i < this.objects.length) {
@@ -213,16 +260,6 @@ export class Quadtree<T> {
                 } else {
                     i++;
                 }
-            }
-
-            if (Quadtree.debug) {
-                console.log(`${this.bounds.toString()}:${this.level} left ${this.objects.length} after redistribution`);
-            }
-        }
-
-        if (Quadtree.debug) {
-            if (this.objects.length > Quadtree.MAX_OBJECTS * 2) {
-                console.warn(`${this.objects.length} objects in ${this.bounds.toString()} at level ${this.level}`);
             }
         }
 
@@ -254,7 +291,7 @@ export class Quadtree<T> {
         }
     
         if (!this.isSplitted()) {
-            if (this.bounds.width <= 8 && this.bounds.height <= 8) {
+            if (!this.isLargerThanLeaf()) {
                 // check if all points in bounds are inside a rectangle
                 for (let dx = 0; dx < this.bounds.width; dx++) {
                     for (let dy = 0; dy < this.bounds.height; dy++) {
@@ -281,7 +318,16 @@ export class Quadtree<T> {
         return this.nodes[0];
     }
 
+    private isLargerThanLeaf() {
+        return Math.max(this.bounds.width, this.bounds.height) > Quadtree.MAX_LEAF_SIZE;
+    }
+
     getBounds(bounds?: { min: Vector, max: Vector }): { min: Vector, max: Vector } {
+
+        // an empty tree created without bounds has no root yet
+        if (!this.bounds) {
+            return bounds;
+        }
 
         // leave early this node bounds are already covered
         if (bounds &&
@@ -337,19 +383,7 @@ export class Quadtree<T> {
      * @param queryRect 
      * @returns 
      */
-    *retrieve(queryRect: Rectangle): Generator<T | Rectangle | DebugRectangle, void, T | Rectangle | DebugRectangle> {
-
-        if (Quadtree.debug) {
-            yield {
-                bounds: this.bounds
-            } as DebugRectangle
-        }
-
-        // if this node is filled, return the whole node
-        if (this.filled) {
-            yield this.bounds;
-            return;
-        }
+    *retrieve(queryRect: Rectangle): Generator<T, void, undefined> {
 
         // return this node objects
         for (const object of this.objects) {
@@ -368,15 +402,51 @@ export class Quadtree<T> {
     }
 
     /**
+     * Retrieve all objects that intersect with a given rectangle
+     * @param queryRect 
+     */
+    *retrieveObjects(queryRect: Rectangle): Generator<T, void, undefined> {
+
+        for (const object of this.objects) {
+            if (queryRect.overlaps(object.rectangle)) {
+                yield object.object;
+            }
+        }
+
+        if (this.isSplitted()) {
+            for (const node of this.nodes) {
+                if (queryRect.overlaps(node.bounds)) {
+                    yield* node.retrieveObjects(queryRect);
+                }
+            }
+        }
+    }
+
+    /**
+     * Yield every node whose bounds overlap a given rectangle, to display the tree structure
+     * @param queryRect
+     */
+    *overlappingNodes(queryRect: Rectangle): Generator<QuadtreeNode, void, undefined> {
+
+        if (!this.bounds || !queryRect.overlaps(this.bounds)) {
+            return;
+        }
+
+        yield { bounds: this.bounds, filled: this.filled };
+
+        if (this.isSplitted()) {
+            for (const node of this.nodes) {
+                yield* node.overlappingNodes(queryRect);
+            }
+        }
+    }
+
+    /**
      * Clear the Quadtree by removing all objects and child nodes
      */
     clear(): void {
         this.objects = [];
-        // for (const node of this.nodes) {
-        //     if (node) {
-        //         node.clear();
-        //     }
-        // }
         this.nodes = [];
+        this.filled = false;
     }
 }

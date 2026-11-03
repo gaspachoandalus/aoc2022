@@ -6,6 +6,10 @@ export type Status = {
     part2: number;
 }
 
+export const config = {
+    type: "2D"
+};
+
 export class AOC {
 
     map: Array<Array<string>> = [];
@@ -47,14 +51,14 @@ export class AOC {
         ));
 
         this.display
-            .setLayer(0, "hills", { style: {color: Colors.white, bgColor: Colors.black} })
-            .setLayer(1, "part1", { style: {color: null, bgColor: Colors.blue } }) // part2
-            .setLayer(2, "part3", { style: {color: null, bgColor: Colors.green } }) // part1
-            .setLayer(3, "covered", { style: {color: null, bgColor: Colors.yellow, strike: true} }) // BFS coverage
-            .setLayer(4, "breadth first search front", { style: {color: null, bgColor: Colors.red } }) // BFS front
+            .setLayer(0, "Elevation map", { style: {color: Colors.white, bgColor: Colors.black} })
+            .setLayer(1, "Part 2 route", { style: {color: null, bgColor: Colors.blue } })
+            .setLayer(2, "Part 1 route", { style: {color: null, bgColor: Colors.green } })
+            .setLayer(3, "Visited cells", { style: {color: null, bgColor: Colors.yellow, strike: true} })
+            .setLayer(4, "BFS frontier", { style: {color: null, bgColor: Colors.red } })
             .setItems(this.map.map((v, y) => ({x: 0, y, content: v.join("")})), 0)
             // .addItems([{...this.start, content: "S"}, {...this.end, content: "E"}], 0);
-            .setBoundaries()
+            .fitBounds();
 
         await this.bfs(this.end, this.start);
         this.display.setItems(this.distance[this.start.y][this.start.x], 2);
@@ -98,7 +102,7 @@ export class AOC {
                 .setItems(iterateProperty(deque.values(), o => o.pos), 4)
                 .addItems([{...curr.pos}], 3)
                 .setTitle(`distance: ${curr.path.length}`)
-                .throttle();
+                .checkpoint();
 
             // try places around
             moves

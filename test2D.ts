@@ -1,6 +1,10 @@
 import { Colors, Display2D } from "./utils/Display2D.js";
 import { Vector, sleep } from "./utils/vector.js";
 
+export const config = {
+    type: "2D"
+};
+
 enum Test {
     basicText,
     fill,
@@ -20,23 +24,26 @@ export class AOC {
 
     public async Run() {
 
-        this.display.setBoundaries({ min: { x: 0, y: -4}, max: null });
-
         switch (test) {
             case Test.basicText:
                 let y = 0;
                 const sampleText = "the little brown fox jumps over the lazy dog";
+                this.display.fitBounds({
+                    min: { x: 0, y: 0 },
+                    max: { x: sampleText.length + 11, y: 4 }
+                });
 
                 for (let layer of [0, 1, 2, 3]) {
 
                     this.display.addItems([{ x: 0, y, content: sampleText }], layer);
                     this.display.addItems([{ x: sampleText.length + 10, y, content: layer.toString() }], 0);
                     y++;
-                    await this.display.throttle();
+                    await this.display.checkpoint();
                 }
                 break;
 
             case Test.fill:
+                this.display.fitBounds({ min: { x: 0, y: 0 }, max: { x: 8, y: 8 } });
                 // fill a region
                 for (let x = 0; x < 8; x++) {
                     for (let y = 0; y < 8; y++) {
@@ -45,16 +52,18 @@ export class AOC {
                             y
                         }],
                             3);
-                        await this.display.throttle();
+                        await this.display.checkpoint();
                     }
                 }
                 break;
 
             case Test.random:
-                this.randomFill(10000, async () => await this.display.throttle());
+                this.display.fitBounds({ min: { x: -300, y: -300 }, max: { x: 300, y: 300 } });
+                this.randomFill(10000, async () => await this.display.checkpoint());
                 break;
 
             case Test.scrollIntoView:
+                this.display.fitBounds({ min: { x: -10, y: -10 }, max: { x: 11, y: 11 } });
                 // randomly fill the region
                 this.randomFill(1000);
                 await sleep(1000);
@@ -73,6 +82,8 @@ export class AOC {
                 }
                 break;
         }
+
+        return {};
     }
 
     private randomFill(count: number, cb: Function = null) {

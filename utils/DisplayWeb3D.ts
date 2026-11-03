@@ -14,6 +14,13 @@ import { VoxelGeometry } from "./VoxelGeometry.js";
 import { Checkpoint } from "./Checkpoint.js";
 import { Display3D, Style, Colors } from "./Display3D.js";
 import { Log } from "./Log.js";
+import { getThrottleLimit, MAX_PREVIEW_ITERATIONS_PER_SECOND } from "./DisplayOptions.js";
+import type { DisplayOptions } from "./DisplayOptions.js";
+import { createDisplayControlsHelp } from "./DisplayControlsHelp.js";
+
+function isWireframeMaterial(material: THREE.Material): material is THREE.Material & { wireframe: boolean } {
+    return "wireframe" in material && typeof material.wireframe === "boolean";
+}
 
 /**
  * Way to merge cubes from the same group
@@ -45,7 +52,49 @@ type Group = {
     name?: string; // group name
 };
 
-const max_maxIterationsPerSecond = 1000;
+type BufferedBlock = { x: number; y: number; z: number };
+
+const VOXEL_FACE_TEXTURE_SIZE = 128;
+const DEFAULT_CAMERA_FOV = 50;
+const MIN_CAMERA_FOV = 25;
+const MAX_CAMERA_FOV = 100;
+const CAMERA_FOV_WHEEL_SENSITIVITY = 0.05;
+const MAX_CAMERA_FOV_CHANGE_PER_EVENT = 5;
+let voxelFaceTexture: THREE.DataTexture | undefined;
+
+function getVoxelFaceTexture(): THREE.DataTexture {
+    if (voxelFaceTexture) {
+        return voxelFaceTexture;
+    }
+
+    const size = VOXEL_FACE_TEXTURE_SIZE;
+    const pixels = new Uint8Array(size * size * 4);
+    const edgeWidth = size * 0.03;
+
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const edgeDistance = Math.min(x, y, size - 1 - x, size - 1 - y);
+            const edge = Math.max(0, 1 - edgeDistance / edgeWidth);
+            const softEdge = edge * edge * (3 - 2 * edge);
+            const channel = Math.round(255 * (1 - 0.065 * softEdge));
+            const pixelIndex = (y * size + x) * 4;
+
+            pixels[pixelIndex] = channel;
+            pixels[pixelIndex + 1] = channel;
+            pixels[pixelIndex + 2] = channel;
+            pixels[pixelIndex + 3] = 255;
+        }
+    }
+
+    voxelFaceTexture = new THREE.DataTexture(pixels, size, size, THREE.RGBAFormat);
+    voxelFaceTexture.colorSpace = THREE.SRGBColorSpace;
+    voxelFaceTexture.magFilter = THREE.LinearFilter;
+    voxelFaceTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    voxelFaceTexture.generateMipmaps = true;
+    voxelFaceTexture.needsUpdate = true;
+
+    return voxelFaceTexture;
+}
 
 export class WebDisplay3D implements Display3D
 {
@@ -55,13 +104,16 @@ export class WebDisplay3D implements Display3D
     camera: THREE.PerspectiveCamera;
     scene: THREE.Scene;
     renderer: THREE.WebGLRenderer;
-    
-    skyboxCamera: THREE.PerspectiveCamera;
-    skyboxScene: THREE.Scene;
+
+    private studioGrid?: THREE.GridHelper;
+    private studioGridSize = 0;
+    private studioGridSpacing = 0;
+    private studioAnchor?: THREE.Vector3;
+    private studioGridY = 0;
     
     spotLights: Array<{
         color: THREE.ColorRepresentation,
-        intensity?: number,
+        intensityScale?: number,
         rotationY: number,
         rotationZ: number,
         spotLight?: THREE.SpotLight,
@@ -74,14 +126,14 @@ export class WebDisplay3D implements Display3D
 
     groups: Array<Group> = [];
     
-    groupsFolder: dat.GUI;
+    groupsFolder?: dat.GUI;
     
     orbitControls: OrbitControls;
     flyControls: FlyControls;
     firstPersonControls: FirstPersonControls;
     arcballControls: ArcballControls;
     pointerLockControls: PointerLockControls;
-    stats1: Stats.Panel;
+    stats1?: Stats.Panel;
     
     axes: THREE.AxesHelper;
     ambientLight: THREE.AmbientLight;
@@ -93,18 +145,29 @@ export class WebDisplay3D implements Display3D
     lastUserInteraction = 0;
     
     cameraTarget: THREE.Vector3;
+    private readonly normalFollowTarget = new THREE.Vector3();
+    private readonly normalFollowPosition = new THREE.Vector3();
+    private readonly normalFollowCurrentRotation = new THREE.Quaternion();
+    private readonly normalFollowTargetRotation = new THREE.Quaternion();
+    private normalFollowTargetInitialized = false;
+    private readonly followViewportMargin = 0.3;
+    private readonly projectedFollowTarget = new THREE.Vector3();
+    private previewCameraInitialized = false;
 
     readonly cameraPosition = new THREE.Vector3();
     readonly cubeSize = 50;
+    private readonly normalFollowDistance = 36 * this.cubeSize;
 
     readonly viewDistance = 1_000 * this.cubeSize;
     readonly lightDistance = 60 * this.cubeSize;
     readonly spotLightAngle = Math.PI / 3; // Math.PI / 6
     readonly follow_delay_after_user_move_ms = 5_000;
+    private readonly options: DisplayOptions;
     
     readonly simulation = {
         maxIterationsPerSecond: 200,
-        debugAxes: false,
+        stats: false,
+        debugAxes: true,
         debugLights: false,
         debugNormals: false,
         spotLightIntensity: 15,
@@ -162,17 +225,28 @@ export class WebDisplay3D implements Display3D
         return new WebDisplay3D();
     }
 
+    public constructor(options: DisplayOptions = {}) {
+        this.options = options;
+    }
+
     public init(iterationsPerSecond?: number) {
     
         console.log("init");
     
         // simulation speed
     
-        this.simulation.maxIterationsPerSecond = iterationsPerSecond ?? 100;
+        const requestedRate = iterationsPerSecond ?? 100;
+        this.simulation.maxIterationsPerSecond = this.options.preview
+            ? this.options.previewIterationsPerSecond ?? requestedRate
+            : requestedRate;
+
+        if (this.scene) {
+            return;
+        }
     
         // camera
     
-        this.camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 1, this.viewDistance );
+        this.camera = new THREE.PerspectiveCamera( DEFAULT_CAMERA_FOV, window.innerWidth / window.innerHeight, 1, this.viewDistance );
         this.camera.position.setFromCylindrical(new THREE.Cylindrical(this.lightDistance, 0, this.lightDistance));
     
         // scene
@@ -180,157 +254,212 @@ export class WebDisplay3D implements Display3D
         this.scene = new THREE.Scene();
         this.scene.matrixAutoUpdate = false;
     
-        // skybox camera
-        this.skyboxCamera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 1, this.viewDistance );
-    
-        // skybox scene
-        this.skyboxScene = new THREE.Scene();
-    
         // ambient light
     
-        this.ambientLight = new THREE.AmbientLight( 0xffffff, .25 );
+        this.ambientLight = new THREE.AmbientLight( 0xffffff, .18 );
         this.scene.add( this.ambientLight );
+
+        const keyLight = new THREE.DirectionalLight(0xffffff, .6);
+        keyLight.position.set(1, 2, 1.2);
+        this.scene.add(keyLight, keyLight.target);
     
         if (true) {
     
-            const hemisphereLight = new THREE.HemisphereLight( 0xffffbb, 0x080820, .5 );
+            const hemisphereLight = new THREE.HemisphereLight( 0xeaf2ff, 0x34414d, .65 );
             this.scene.add( hemisphereLight );
     
         }
     
-        // stats
-    
-        this.stats1 = new (Stats as any)();
-        this.stats1.dom.id = "stats";
-        document.body.appendChild(this.stats1.dom);
-    
-        // dat.gui
-        const gui = new dat.GUI();
-        const ambientLightFolder = gui.addFolder('Light');
-        ambientLightFolder.add(this.ambientLight, 'intensity', 0, 1, 0.01).name("Ambient");
-        ambientLightFolder.add(this.simulation, 'spotLightIntensity', 0, 100, 1).name("Spotlights").onChange(value => {
-            for (const spotlight of this.spotLights) {
-                spotlight.spotLight.intensity = value;
-            }
-        });
-        const simulationFolder = gui.addFolder('Simulation');
-        const pause = simulationFolder.add(this.simulation, "pause").name("paused").listen().onChange(value => {
-            value ? Pause.pause() : Pause.continue();
-        });;
-        simulationFolder.add(this.simulation, 'maxIterationsPerSecond', 0, max_maxIterationsPerSecond, 1).name("max iterations/s");
-        simulationFolder.add(this.simulation, 'debugLights').name("show spotlights").onChange(value => {
-            this.setDebugLights(value);
-        });
-        simulationFolder.add(this.simulation, 'debugAxes').name("show axes").onChange(value => {
-            this.setDebugAxes(value);
-        });
-        simulationFolder.add(this.simulation, 'debugNormals').name("show normals").onChange(value => {
-            this.simulation.debugNormals = value;
-        });
-        simulationFolder.open()
-        this.groupsFolder = gui.addFolder('Groups');
-    
-        // override material
-        const wireframeMaterial = new THREE.MeshBasicMaterial( { color: 0xFFFFFF, wireframe: true });
-        simulationFolder.add(this.simulation, 'wireframe').onChange( value => {
-            if (value) {
-                this.scene.overrideMaterial = wireframeMaterial;
-            } else {
-                this.scene.overrideMaterial = null;
-            }
-        });
-    
-        simulationFolder.add(this.scene.children, 'length').name("Object count").disable().listen();
-        simulationFolder.add(Checkpoint, 'countPerSecond').name("iterations/s").decimals(2).disable().listen();
+        this.createSimulationControls();
     
         // debug axes
     
         this.setDebugAxes(this.simulation.debugAxes);
     
-        // floor
-    
-        if (false) {
-            var floorMaterial = new THREE.MeshStandardMaterial({
-                color: new THREE.Color("lightgray"),
-                // emissive: white,
-                emissiveIntensity: .3,
-                roughness: 0,
-                side: THREE.DoubleSide
-            });
-            var floorGeometry = new THREE.PlaneGeometry(100000, 100000, 10, 10);
-            var floorMesh = new THREE.Mesh(floorGeometry, floorMaterial);
-            floorMesh.rotation.x = - Math.PI / 2;
-            // floorMesh.receiveShadow = true;
-            this.scene.add( floorMesh );
-        }
-    
-        // skybox
-    
-        const materialArray = this.createMaterialArray("Daylight Box_Pieces", "Daylight Box", ".bmp");
-        const skyboxGeo = new THREE.BoxGeometry(this.viewDistance, this.viewDistance, this.viewDistance);
-        const skybox = new THREE.Mesh(skyboxGeo, materialArray);
-        this.skyboxScene.add(skybox);
-        
-        // fog
-    
-        if (true) {
-    
-            this.scene.fog = new THREE.Fog( 0xcccccc, 10, this.viewDistance );
-    
-        }
-    
+        this.createStudioGrid();
     }
-    
-    private createPathStrings(foldername: string, filename: string, extension: string) {
-        const basePath = "./static/skybox/";
-        const baseFilename = basePath + foldername + "/" + filename;
-        // const sides = ["ft", "bk", "up", "dn", "rt", "lf"];
-        const sides = ["rt", "lf", "up", "dn", "ft", "bk" ];
-        const pathStings = sides.map(side => {
-            return baseFilename + "_" + side + extension;
-        });
-        
-        return pathStings;
-    }
-    
-    private createMaterialArray(foldername: string, filename: string, extension: string): THREE.Material[] {
-    
-        const skyboxImagepaths = this.createPathStrings(foldername, filename, extension);
-        const materialArray = skyboxImagepaths.map(image => {
-            let texture = new THREE.TextureLoader().load(image);
-            return new THREE.MeshBasicMaterial({ map: texture, side: THREE.BackSide });
-        });
-        return materialArray;
-    }
-    
 
-    line: THREE.LineSegments;
-    
-    /**
-     * Sets or changes a white box on the scene at the origin point
-     * Previous values (or 1 by default) will be used for missing parameters.
-     * @param width box width
-     * @param height box height
-     * @param depth box depth
-     */
-    public setBox(width?: number, height?: number, depth?: number) {
-    
-        const actualParameters = ((this.line?.geometry as THREE.EdgesGeometry)?.parameters?.geometry as THREE.BoxGeometry)?.parameters;
-    
-        if (this.line) {
-            this.scene.remove( this.line );
+    /** Creates the full-run controls while keeping preview rendering free of debug UI. */
+    private createSimulationControls(): void {
+        if (this.options.preview) {
+            return;
         }
-    
-        const worldWidth = width ? this.cubeSize * width : (actualParameters?.width ?? this.cubeSize);
-        const worldHeight = height ? this.cubeSize * height : (actualParameters?.height ?? this.cubeSize);
-        const worldDepth = depth ? this.cubeSize * depth : (actualParameters?.depth ?? this.cubeSize);
-    
-        const geometry = new THREE.BoxGeometry(worldWidth, worldHeight, worldDepth);
-    
-        const edges = new THREE.EdgesGeometry(geometry);
-        this.line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0xffffff }));
-        this.line.position.set(worldWidth / 2, worldHeight / 2, worldDepth / 2);
-        this.scene.add(this.line);
+
+        this.stats1 = new (Stats as any)();
+        this.stats1.dom.id = "stats";
+        this.stats1.dom.classList.add("hidden");
+        const overlays = document.getElementById("simulation-overlays");
+        if (!overlays) {
+            throw new Error("Missing simulation overlays element.");
+        }
+        overlays.appendChild(this.stats1.dom);
+
+        const gui = new dat.GUI();
+        const simulationFolder = gui.addFolder('Simulation');
+        simulationFolder.add(this.simulation, "pause").name("paused").listen().onChange(value => {
+            value ? Pause.pause() : Pause.continue();
+        });
+        simulationFolder.add(this.simulation, "stats").name("show FPS").listen().onChange(value => {
+            this.stats1.dom.classList.toggle("hidden", !value);
+        });
+        simulationFolder.add(this.simulation, 'maxIterationsPerSecond', 0, MAX_PREVIEW_ITERATIONS_PER_SECOND, 1).name("max iterations/s");
+        simulationFolder.add(this.camera, 'fov', MIN_CAMERA_FOV, MAX_CAMERA_FOV, 1)
+            .name("FOV (°)")
+            .decimals(1)
+            .listen()
+            .onChange(() => this.camera.updateProjectionMatrix());
+        simulationFolder.add(this.scene.children, 'length').name("Object count").disable().listen();
+        simulationFolder.add(Checkpoint, 'countPerSecond').name("iterations/s").decimals(2).disable().listen();
+        simulationFolder.open();
+
+        const ambientLightFolder = gui.addFolder('Light');
+        ambientLightFolder.add(this.ambientLight, 'intensity', 0, 1, 0.01).name("Ambient");
+        ambientLightFolder.add(this.simulation, 'spotLightIntensity', 0, 100, 1).name("Spotlights").onChange(value => {
+            for (const spotlight of this.spotLights) {
+                spotlight.spotLight.intensity = value / 10 * (spotlight.intensityScale ?? 1);
+            }
+        });
+
+        this.groupsFolder = gui.addFolder('Groups');
+
+        const debugFolder = gui.addFolder('Debug');
+        debugFolder.add(this.simulation, 'debugLights').name("show spotlights").onChange(value => {
+            this.setDebugLights(value);
+        });
+        debugFolder.add(this.simulation, 'debugAxes').name("show axes").onChange(value => {
+            this.setDebugAxes(value);
+        });
+        debugFolder.add(this.simulation, 'debugNormals').name("show normals").onChange(value => {
+            this.simulation.debugNormals = value;
+        });
+
+        const wireframeMaterial = new THREE.MeshBasicMaterial({ color: 0xFFFFFF, wireframe: true });
+        debugFolder.add(this.simulation, 'wireframe').onChange(value => {
+            this.scene.overrideMaterial = value ? wireframeMaterial : null;
+        });
+    }
+
+    private createStudioGrid(): void {
+        this.studioGridSize = this.normalFollowDistance * 4;
+        this.studioGridY = -this.cubeSize * 0.42;
+
+        const divisions = Math.round(this.studioGridSize / (this.cubeSize * 2));
+        this.studioGridSpacing = this.studioGridSize / divisions;
+        this.studioGrid = this.createStudioGridGeometry(this.studioGridSize);
+        this.studioGrid.position.y = this.studioGridY;
+        this.scene.add(this.studioGrid);
+
+        this.initializeStudioGridAnchor();
+    }
+
+    private createStudioGridGeometry(size: number): THREE.GridHelper {
+        const divisions = Math.round(size / this.studioGridSpacing);
+        const grid = new THREE.GridHelper(size, divisions, 0x50696e, 0x50696e);
+        grid.material.transparent = true;
+        grid.material.opacity = 1;
+        grid.material.depthWrite = false;
+        grid.renderOrder = 2;
+        grid.frustumCulled = false;
+        return grid;
+    }
+
+    private initializeStudioGridAnchor(): void {
+        if (!this.studioGrid || this.studioAnchor) {
+            return;
+        }
+
+        const bounds = new THREE.Box3();
+        for (const group of this.groups) {
+            const object = group?.group ?? group?.mesh;
+            if (object) {
+                bounds.expandByObject(object);
+            }
+        }
+
+        if (bounds.isEmpty()) {
+            return;
+        }
+
+        const contentCenter = bounds.getCenter(new THREE.Vector3());
+        this.studioAnchor = new THREE.Vector3(contentCenter.x, 0, contentCenter.z);
+        this.studioGridY = bounds.min.y - this.cubeSize * 0.42;
+        this.positionStudioGrid(this.studioAnchor);
+        this.expandStudioGridToContain(bounds);
+    }
+
+    private positionStudioGrid(anchor: THREE.Vector3): void {
+        if (!this.studioGrid || this.studioGridSpacing === 0) {
+            return;
+        }
+
+        const spacing = this.studioGridSpacing;
+        this.studioGrid.position.set(
+            Math.round(anchor.x / spacing) * spacing,
+            this.studioGridY,
+            Math.round(anchor.z / spacing) * spacing
+        );
+    }
+
+    private expandStudioGridToContain(bounds: THREE.Box3): void {
+        if (!this.studioGrid) {
+            return;
+        }
+
+        const center = this.studioGrid.position;
+        const halfExtent = Math.max(
+            Math.abs(bounds.min.x - center.x),
+            Math.abs(bounds.max.x - center.x),
+            Math.abs(bounds.min.z - center.z),
+            Math.abs(bounds.max.z - center.z)
+        );
+        this.expandStudioGridToHalfExtent(halfExtent);
+    }
+
+    private expandStudioGridToIncludeBlock(x: number, z: number): void {
+        if (!this.studioGrid || !this.studioAnchor) {
+            return;
+        }
+
+        const center = this.studioGrid.position;
+        const minX = x * this.cubeSize;
+        const maxX = minX + this.cubeSize;
+        const minZ = z * this.cubeSize;
+        const maxZ = minZ + this.cubeSize;
+        const halfExtent = Math.max(
+            Math.abs(minX - center.x),
+            Math.abs(maxX - center.x),
+            Math.abs(minZ - center.z),
+            Math.abs(maxZ - center.z)
+        );
+        this.expandStudioGridToHalfExtent(halfExtent);
+    }
+
+    private expandStudioGridToHalfExtent(halfExtent: number): void {
+        if (!this.studioGrid || this.studioGridSpacing === 0) {
+            return;
+        }
+
+        const spacing = this.studioGridSpacing;
+        const requiredSize = Math.ceil((2 * (halfExtent + spacing)) / spacing) * spacing;
+        if (requiredSize <= this.studioGridSize) {
+            return;
+        }
+
+        const expandedSize = Math.ceil(Math.max(requiredSize, this.studioGridSize * 1.25) / spacing) * spacing;
+        const grid = this.studioGrid;
+        const expandedGrid = this.createStudioGridGeometry(expandedSize);
+        const previousGeometry = grid.geometry;
+        const previousMaterial = grid.material;
+
+        grid.geometry = expandedGrid.geometry;
+        grid.material = expandedGrid.material;
+        previousGeometry.dispose();
+        if (Array.isArray(previousMaterial)) {
+            previousMaterial.forEach(material => material.dispose());
+        } else {
+            previousMaterial.dispose();
+        }
+        this.studioGridSize = expandedSize;
     }
     
     private createMaterial(style: Style) {
@@ -368,10 +497,9 @@ export class WebDisplay3D implements Display3D
             color: style.color ?? Colors.green,
             opacity: style.opacity ?? .7,
             transparent: style.transparent ?? false,
-            emissive: style.color ?? Colors.green,
-            emissiveIntensity: (style.color == Colors.red ? .5 : .3),
-            roughness: 0,
-            metalness: .3,
+            roughness: .72,
+            metalness: .05,
+            map: getVoxelFaceTexture(),
             side: THREE.DoubleSide
         };
         const shaderMaterial: THREE.ShaderMaterialParameters = {
@@ -453,50 +581,20 @@ export class WebDisplay3D implements Display3D
         // spot lights
     
         this.spotLights = [
-            {
-                color: Colors.pink,
-                rotationY: 0,
-                rotationZ: 0
-            },
-            {
-                color: Colors.green,
-                intensity: this.simulation.spotLightIntensity * 1.5,
-                rotationY: Math.PI,
-                rotationZ: 0
-            },
-            {
-                color: Colors.orange,
-                rotationY: Math.PI / 2,
-                rotationZ: 0
-            },
-            {
-                color: Colors.yellow,
-                rotationY: Math.PI / 2,
-                rotationZ: Math.PI
-            },
-            {
-                color: Colors.blue,
-                rotationY: Math.PI / 2,
-                rotationZ: 3 * Math.PI / 2
-            },
-            {
-                color: Colors.white,
-                rotationY: Math.PI / 2,
-                rotationZ: Math.PI / 2
-            }
+            { color: 0x770000, intensityScale: .25, rotationY: 0, rotationZ: 0 }, // +X
+            { color: 0x770000, intensityScale: .25, rotationY: Math.PI, rotationZ: 0 }, // -X
+            { color: 0x007700, intensityScale: .25, rotationY: Math.PI / 2, rotationZ: Math.PI / 2 }, // +Y
+            { color: 0x007700, intensityScale: .25, rotationY: Math.PI / 2, rotationZ: 3 * Math.PI / 2 }, // -Y
+            { color: 0x000077, intensityScale: .25, rotationY: Math.PI / 2, rotationZ: Math.PI }, // +Z
+            { color: 0x000077, intensityScale: .25, rotationY: Math.PI / 2, rotationZ: 0 } // -Z
         ];
     
         // instanciate spotlights
     
         for (const spotLight of this.spotLights) {
-            spotLight.spotLight = new THREE.SpotLight(spotLight.color, spotLight.intensity ?? this.simulation.spotLightIntensity, this.lightDistance, this.spotLightAngle, .5, 1.5 );
-            // spotLight.spotLight.castShadow = true;
-    
-            // spotLight.spotLight.shadow.mapSize.width = 512; // default
-            // spotLight.spotLight.shadow.mapSize.height = 512; // default
-            // spotLight.spotLight.shadow.camera.near = 0.5; // default
-            // spotLight.spotLight.shadow.camera.far = 500; // default
-            // spotLight.spotLight.shadow.focus = 1; // default
+            // The spots orbit far from the scene, so disable distance cutoff and decay.
+            spotLight.spotLight = new THREE.SpotLight(spotLight.color, this.simulation.spotLightIntensity / 10 * (spotLight.intensityScale ?? 1), 0, this.spotLightAngle, .5, 0 );
+
     
             this.positionAndDirectLight( spotLight.spotLight, spotLight.rotationY, spotLight.rotationZ)
             this.scene.add( spotLight.spotLight );
@@ -505,11 +603,53 @@ export class WebDisplay3D implements Display3D
     
         // renderer
     
-        this.renderer = new THREE.WebGLRenderer( { antialias: false } );
+        this.renderer = new THREE.WebGLRenderer( { antialias: false, alpha: true } );
         this.renderer.autoClear = false;
+        this.renderer.setClearColor(0x000000, 0);
         this.renderer.setPixelRatio( window.devicePixelRatio );
         this.renderer.setSize( window.innerWidth, window.innerHeight );
+        this.renderer.domElement.id = "canvas";
+        this.renderer.domElement.dataset.aocRenderer = "true";
+        this.renderer.domElement.classList.add("display-canvas--3d");
         document.body.appendChild( this.renderer.domElement );
+        if (!this.options.preview) {
+            const controlsHelp = createDisplayControlsHelp("3d", [
+                {
+                    label: "Mouse",
+                    description: "Click the scene to capture the pointer; move to look. Esc releases."
+                },
+                {
+                    label: "Wheel",
+                    description: "Scroll down (wheel back) to widen the field of view; scroll up (wheel forward) to narrow it."
+                },
+                {
+                    label: "W/A/S/D",
+                    description: "While captured, move forward/back and left/right; arrows also work.",
+                    key: true
+                },
+                { label: "R / F", description: "Move up/down while captured.", key: true },
+                {
+                    label: "Speed",
+                    description: "Tap and release Ctrl to toggle quarter speed; tap again for normal. Hold Shift to double speed; it temporarily overrides slow mode."
+                },
+                { label: "Space", description: "Pause or resume.", key: true },
+                { label: "L", description: "Advance one step.", key: true },
+                {
+                    label: "Touch",
+                    description: "No touch gestures; use mouse and keyboard."
+                }
+            ]);
+            const summary = controlsHelp.querySelector("summary");
+            if (!summary) {
+                throw new Error("3D controls summary was not created");
+            }
+
+            this.movementSpeedStatus = document.createElement("span");
+            this.movementSpeedStatus.setAttribute("aria-live", "polite");
+            summary.append(" · ", this.movementSpeedStatus);
+            this.updateMovementSpeedStatus();
+            document.body.appendChild(controlsHelp);
+        }
     
         // orbit control
     
@@ -564,6 +704,7 @@ export class WebDisplay3D implements Display3D
         window.addEventListener( 'resize', this.onWindowResize.bind(this) );
         window.addEventListener( 'keydown', this.onKeyDown.bind(this) );
         window.addEventListener( 'keyup', this.onKeyUp.bind(this) );
+        window.addEventListener( 'blur', this.onWindowBlur.bind(this) );
         window.addEventListener( 'wheel', this.onWheel.bind(this), { passive: false } );
         window.addEventListener( 'pointermove', this.onPointerMove.bind(this) );
         window.addEventListener( 'pointerdown', this.onPointerDown.bind(this) );
@@ -571,163 +712,163 @@ export class WebDisplay3D implements Display3D
         this.renderer.setAnimationLoop( this.animate.bind(this) );
     }
     
-    private flushBlocksBuffer() {
-    
-        // console.log(`flushBlocksBuffer ${voxelsClock.getDelta()} ms`);
-    
+    /** Applies queued voxels and rebuilds each group's geometry once per render flush. */
+    private flushBlocksBuffer(): void {
         if (!this.blocksBuffers) {
             return;
         }
-    
-        for (const group in this.blocksBuffers) {
-            const blocksBuffer = this.blocksBuffers[group];
-            
-            // find group and assert it exists
-            const type = this.groups[group];
-            if (!type) {
-                throw new Error(`undefined group ${group}`)
-            };
-        
-            for (const [index, item] of blocksBuffer.entries()) {
-    
-                if (type.mergeMode == MergeMode.none) {
-        
-                    const voxelGeo = new THREE.BoxGeometry( this.cubeSize, this.cubeSize, this.cubeSize );
-                    voxelGeo.translate(+ this.cubeSize / 2, + this.cubeSize / 2, + this.cubeSize / 2);
-                    voxelGeo.translate(item.x * this.cubeSize, item.y * this.cubeSize, item.z * this.cubeSize);
-        
-                    if (!type.group) {
-                        type.group = new THREE.Group();
-                        this.scene.add( type.group );
-                    }
-        
-                    type.mesh = new THREE.Mesh( voxelGeo, type.material );
-                    type.mesh.userData = { group: group };
-        
-                    type.group.add( type.mesh );
-                }
-                else if (type.mergeMode == MergeMode.csg) {
-            
-                    const voxelGeo = new THREE.BoxGeometry( this.cubeSize, this.cubeSize, this.cubeSize );
-                    voxelGeo.translate(+ this.cubeSize / 2, + this.cubeSize / 2, + this.cubeSize / 2);
-                        
-                    voxelGeo.translate(item.x * this.cubeSize, item.y * this.cubeSize, item.z * this.cubeSize);
-        
-                    if (!type.csg && !type.mesh) {
-                        type.csg = CSG.fromGeometry(voxelGeo);
-                    }
-                    else {
-                        if (!type.csg && type.mesh) {
-                            type.csg = CSG.fromMesh(type.mesh);
-                        }
-                        
-                        type.csg = type.csg.union(CSG.fromGeometry(voxelGeo));
-                    }
-                }
-                else if (type.mergeMode == MergeMode.voxelGeometry) {
-        
-                    if (!type.mesh) {
-    
-                        const voxelGeometry = new VoxelGeometry(this.cubeSize);
-                        voxelGeometry.addVoxel(new Vector3(item. x, item.y, item.z));
-        
-                        // material
-                        // const boxMaterial = new THREE.MeshPhongMaterial( { specular: 0xffffff, flatShading: true, vertexColors: true } );
-    
-                        // type.mesh = new THREE.Mesh( voxelGeometry.getGeometry(type.color), boxMaterial );
-                        type.mesh = new THREE.Mesh( voxelGeometry.getGeometry(null), type.material );
-                        type.mesh.userData = { group: group, voxelGeometry: voxelGeometry };
-                        this.scene.add(type.mesh);
-    
-                    }
-                    else {
-    
-                        const voxelGeometry = type.mesh.userData.voxelGeometry as VoxelGeometry;
-                        voxelGeometry.addVoxel?.(new Vector3(item.x, item.y, item.z));
-                    }
-                }
-                else if (type.mergeMode == MergeMode.instanced) {
-            
-                    const voxelGeo = new THREE.BoxGeometry( this.cubeSize, this.cubeSize, this.cubeSize );
-                    voxelGeo.translate(+ this.cubeSize / 2, + this.cubeSize / 2, + this.cubeSize / 2);
-                        
-                    if (!type.mesh) {
-                        // type.group = new THREE.Group();
-                        type.mesh = new THREE.InstancedMesh( voxelGeo, type.material, 10000 );
-                        type.mesh.userData = { group: group };
-                        (type.mesh as THREE.InstancedMesh).count = 0;
-        
-                        this.scene.add(type.mesh);
-                    }
-        
-                    const pos = new THREE.Vector3(item.x, item.y, item.z);
-        
-                    const index = (type.mesh as THREE.InstancedMesh).count;
-                    (type.mesh as THREE.InstancedMesh).count++;
-                    (type.mesh as THREE.InstancedMesh).setMatrixAt(index, new THREE.Matrix4().makeTranslation(item.x * this.cubeSize, item.y * this.cubeSize, item.z * this.cubeSize));
-        
-                    if (!(type.mesh as THREE.InstancedMesh).userData.needsUpdate) {
-        
-                        (type.mesh as THREE.InstancedMesh).userData.needsUpdate = setTimeout(() => {
-                            (type.mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
-                            delete (type.mesh as THREE.InstancedMesh).userData.needsUpdate;
-                        }, 100);
-            
-                    }
-                }
-    
-                // Update mesh from CSG
-                if (false && type?.csg) {
-        
-                    const start = Date.now();
-        
-                    if (type.mesh) {
-                        type.mesh.copy(CSG.toMesh(type.csg, new THREE.Matrix4()));
-                        type.mesh.userData = { group };
-                        type.mesh.material = type.material;
-                    }
-                    else {
-                        type.mesh = CSG.toMesh(type.csg, new THREE.Matrix4());
-                        type.mesh.material = type.material;
-                        type.mesh.userData = { group };
-                        this.scene.add(type.mesh);
-                    }
-        
-                    // console.log(`toMesh took ${Date.now() - start}ms`);
-        
-                    type.csg = null;
-                }
-    
-                // create folder GUI
-                if (!type.guiFolder) {
-                    const groupName = type.name ? `${type.name} (${group})` : `${group}`;
-                    type.guiFolder = this.groupsFolder.addFolder(`group ${groupName}`);
-    
-                    type.guiFolder.add(type.group ?? type.mesh.material, "visible");
-    
-                    if (!type.group) {
-                        type.guiFolder.add(type.mesh.material, "transparent").onChange(value => {
-                            if (type.mesh) {
-                                (type.mesh.material as THREE.MeshPhongMaterial).needsUpdate = true;
-                            }
-                        });
-                        if ((type.mesh.material as any).color) {
-                            type.guiFolder.addColor(type.mesh.material, "color");
-                        }
-                        type.guiFolder.add(type.mesh.material, "opacity", 0, 1);
-                    }
-                }
+
+        for (const [groupId, blocks] of Object.entries(this.blocksBuffers)) {
+            const group = this.groups[groupId];
+            if (!group) {
+                throw new Error(`undefined group ${groupId}`);
             }
-    
-            if (type.mergeMode == MergeMode.voxelGeometry) {
-        
-                type.mesh.geometry = (type.mesh.userData.voxelGeometry as VoxelGeometry).getGeometry( type.color );
-    
+
+            for (const block of blocks) {
+                this.addBufferedBlock(groupId, group, block);
             }
-    
+
+            if (group.mergeMode === MergeMode.voxelGeometry) {
+                this.refreshVoxelGeometry(group);
+            }
         }
-    
+
         this.blocksBuffers = null;
+        this.initializeStudioGridAnchor();
+    }
+
+    /** Routes one queued block through the merge strategy selected for its group. */
+    private addBufferedBlock(groupId: string, group: Group, block: BufferedBlock): void {
+        switch (group.mergeMode) {
+            case MergeMode.none:
+                this.addUnmergedVoxel(groupId, group, block);
+                break;
+            case MergeMode.csg:
+                this.addCsgVoxel(group, block);
+                break;
+            case MergeMode.voxelGeometry:
+                this.addVoxelGeometry(groupId, group, block);
+                break;
+            case MergeMode.instanced:
+                this.addInstancedVoxel(groupId, group, block);
+                break;
+        }
+
+        this.createGroupControls(groupId, group);
+    }
+
+    /** Creates a cube translated from grid coordinates into the display's world space. */
+    private createVoxelBox(block: BufferedBlock): THREE.BoxGeometry {
+        const geometry = new THREE.BoxGeometry(this.cubeSize, this.cubeSize, this.cubeSize);
+        geometry.translate(this.cubeSize / 2, this.cubeSize / 2, this.cubeSize / 2);
+        geometry.translate(
+            block.x * this.cubeSize,
+            block.y * this.cubeSize,
+            block.z * this.cubeSize,
+        );
+        return geometry;
+    }
+
+    /** Adds a separate mesh per cube inside a shared scene group. */
+    private addUnmergedVoxel(groupId: string, group: Group, block: BufferedBlock): void {
+        if (!group.group) {
+            group.group = new THREE.Group();
+            this.scene.add(group.group);
+        }
+
+        group.mesh = new THREE.Mesh(this.createVoxelBox(block), group.material);
+        group.mesh.userData = { group: groupId };
+        group.group.add(group.mesh);
+    }
+
+    /** Accumulates a cube into the group's constructive-solid-geometry model. */
+    private addCsgVoxel(group: Group, block: BufferedBlock): void {
+        const voxelGeometry = this.createVoxelBox(block);
+        if (!group.csg && !group.mesh) {
+            group.csg = CSG.fromGeometry(voxelGeometry);
+        } else {
+            if (!group.csg && group.mesh) {
+                group.csg = CSG.fromMesh(group.mesh);
+            }
+            group.csg = group.csg.union(CSG.fromGeometry(voxelGeometry));
+        }
+    }
+
+    /** Stores a voxel in the project's surface-culling geometry and creates its mesh on demand. */
+    private addVoxelGeometry(groupId: string, group: Group, block: BufferedBlock): void {
+        if (!group.mesh) {
+            const voxelGeometry = new VoxelGeometry(this.cubeSize);
+            voxelGeometry.addVoxel(new Vector3(block.x, block.y, block.z));
+            group.mesh = new THREE.Mesh(voxelGeometry.getGeometry(null), group.material);
+            group.mesh.userData = { group: groupId, voxelGeometry };
+            this.scene.add(group.mesh);
+            return;
+        }
+
+        const voxelGeometry = group.mesh.userData.voxelGeometry as VoxelGeometry;
+        voxelGeometry.addVoxel?.(new Vector3(block.x, block.y, block.z));
+    }
+
+    /** Adds a cube instance and batches the GPU instance-matrix update. */
+    private addInstancedVoxel(groupId: string, group: Group, block: BufferedBlock): void {
+        const geometry = new THREE.BoxGeometry(this.cubeSize, this.cubeSize, this.cubeSize);
+        geometry.translate(this.cubeSize / 2, this.cubeSize / 2, this.cubeSize / 2);
+
+        if (!group.mesh) {
+            group.mesh = new THREE.InstancedMesh(geometry, group.material, 10000);
+            group.mesh.userData = { group: groupId };
+            (group.mesh as THREE.InstancedMesh).count = 0;
+            this.scene.add(group.mesh);
+        }
+
+        const mesh = group.mesh as THREE.InstancedMesh;
+        const index = mesh.count;
+        mesh.count++;
+        mesh.setMatrixAt(
+            index,
+            new THREE.Matrix4().makeTranslation(
+                block.x * this.cubeSize,
+                block.y * this.cubeSize,
+                block.z * this.cubeSize,
+            ),
+        );
+
+        if (!mesh.userData.needsUpdate) {
+            mesh.userData.needsUpdate = setTimeout(() => {
+                (group.mesh as THREE.InstancedMesh).instanceMatrix.needsUpdate = true;
+                delete group.mesh.userData.needsUpdate;
+            }, 100);
+        }
+    }
+
+    /** Creates the per-group controls after its first block has established the render object. */
+    private createGroupControls(groupId: string, group: Group): void {
+        if (group.guiFolder || !this.groupsFolder) {
+            return;
+        }
+
+        const groupName = group.name ? `${group.name} (${groupId})` : `${groupId}`;
+        group.guiFolder = this.groupsFolder.addFolder(`group ${groupName}`);
+        group.guiFolder.add(group.group ?? group.mesh.material, "visible");
+
+        if (!group.group) {
+            group.guiFolder.add(group.mesh.material, "transparent").onChange(() => {
+                if (group.mesh) {
+                    (group.mesh.material as THREE.MeshPhongMaterial).needsUpdate = true;
+                }
+            });
+            if ((group.mesh.material as any).color) {
+                group.guiFolder.addColor(group.mesh.material, "color");
+            }
+            group.guiFolder.add(group.mesh.material, "opacity", 0, 1);
+        }
+    }
+
+    /** Rebuilds the exposed voxel faces and releases the geometry replaced by that rebuild. */
+    private refreshVoxelGeometry(group: Group): void {
+        const previousGeometry = group.mesh.geometry;
+        group.mesh.geometry = (group.mesh.userData.voxelGeometry as VoxelGeometry).getGeometry(group.color);
+        previousGeometry.dispose();
     }
     
     public log(text: string) {
@@ -741,6 +882,7 @@ export class WebDisplay3D implements Display3D
         this.blocksBuffers ??= {};
         this.blocksBuffers[group] ??= [];
         this.blocksBuffers[group].push({x, y, z});
+        this.expandStudioGridToIncludeBlock(x, z);
     
         return this;
     }
@@ -794,6 +936,7 @@ export class WebDisplay3D implements Display3D
             this.scene.remove( this.groups[group].mesh );
             this.groups[group].mesh = null;
         }
+        this.initializeStudioGridAnchor();
     }
     
     public move(sourceGroup: number, targetGroup: number) {
@@ -821,18 +964,18 @@ export class WebDisplay3D implements Display3D
     
     public async pause(): Promise<void> {
     
+        if (this.options.preview) {
+            return await this.checkpoint();
+        }
+
         Pause.pause();
-        return await Checkpoint.throttle(this.simulation.maxIterationsPerSecond);
+        return await Checkpoint.checkpoint(getThrottleLimit(this.simulation.maxIterationsPerSecond));
     
     }
     
-    public async throttle(ratio: number = 1): Promise<void> {
+    public async checkpoint(): Promise<void> {
     
-        return Checkpoint.throttle(
-            this.simulation.maxIterationsPerSecond == max_maxIterationsPerSecond
-                ? -1
-                : this.simulation.maxIterationsPerSecond
-        );
+        return Checkpoint.checkpoint(getThrottleLimit(this.simulation.maxIterationsPerSecond));
     
     }
     
@@ -843,17 +986,46 @@ export class WebDisplay3D implements Display3D
     moveLeft = false;
     moveRight = false;
     moveFast = false;
+    moveSlowMode = false;
+    private movementSpeedStatus: HTMLSpanElement | null = null;
     
-    /**
-     * Stop moving time after mouse wheel has been used
-     */
-    stopMovingTime: number = null;
+    /** Synchronizes the visible speed status with the active movement mode. */
+    private updateMovementSpeedStatus(): void {
+        if (!this.movementSpeedStatus) {
+            return;
+        }
+
+        if (this.moveFast) {
+            this.movementSpeedStatus.textContent = "Fast speed";
+        }
+        else if (this.moveSlowMode) {
+            this.movementSpeedStatus.textContent = "Slow speed";
+        }
+        else {
+            this.movementSpeedStatus.textContent = "Normal speed";
+        }
+    }
     
     private onKeyDown (event: KeyboardEvent): any {
+        if (event.target instanceof Element && event.target.closest(".display-controls")) {
+            return;
+        }
     
         this.altKey = event.altKey;
-    
-        this.moveFast = !!event.shiftKey;
+
+        const moveFast = !!event.shiftKey;
+        if (this.moveFast !== moveFast) {
+            this.moveFast = moveFast;
+            this.updateMovementSpeedStatus();
+        }
+
+        if (event.code === "ControlLeft" || event.code === "ControlRight") {
+            if (!event.repeat) {
+                this.moveSlowMode = !this.moveSlowMode;
+                this.updateMovementSpeedStatus();
+            }
+            return;
+        }
     
         switch ( event.code ) {
     
@@ -867,7 +1039,6 @@ export class WebDisplay3D implements Display3D
     
             case 'ArrowUp':
             case 'KeyW':
-                this.stopMovingTime = null;
                 this.moveForward = true;
                 break;
     
@@ -878,7 +1049,6 @@ export class WebDisplay3D implements Display3D
     
             case 'ArrowDown':
             case 'KeyS':
-                this.stopMovingTime = null;
                 this.moveBackward = true;
                 break;
     
@@ -902,6 +1072,11 @@ export class WebDisplay3D implements Display3D
     private onKeyUp (event: KeyboardEvent): any {
     
         this.altKey = event.altKey;
+        const moveFast = !!event.shiftKey;
+        if (this.moveFast !== moveFast) {
+            this.moveFast = moveFast;
+            this.updateMovementSpeedStatus();
+        }
     
         switch ( event.code ) {
     
@@ -934,20 +1109,60 @@ export class WebDisplay3D implements Display3D
                 break;
         }
     }
+
+    private onWindowBlur(): void {
+        this.altKey = false;
+        this.moveForward = false;
+        this.moveBackward = false;
+        this.moveUp = false;
+        this.moveDown = false;
+        this.moveLeft = false;
+        this.moveRight = false;
+        this.moveFast = false;
+        this.updateMovementSpeedStatus();
+        this.highlightSelectedObject();
+    }
     
-    private onWheel (event: WheelEvent): any {
-    
+    private onWheel (event: WheelEvent): void {
+        if (event.target instanceof Element && event.target.closest(".display-controls, .lil-gui")) {
+            return;
+        }
+
+        if (!this.camera || !this.renderer) {
+            return;
+        }
+
+        if (!this.pointerLockControls?.isLocked && event.target !== this.renderer.domElement) {
+            return;
+        }
+
+        const normalizedDeltaY = event.deltaY * (
+            event.deltaMode === WheelEvent.DOM_DELTA_LINE
+                ? 16
+                : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+                    ? 100
+                    : 1
+        );
+        if (normalizedDeltaY === 0) {
+            return;
+        }
+
         event.preventDefault();
-    
-        if (event.deltaY < 0) {
-            this.moveForward = true;
-            this.stopMovingTime = Date.now() + 100;
+
+        const fovChange = THREE.MathUtils.clamp(
+            normalizedDeltaY * CAMERA_FOV_WHEEL_SENSITIVITY,
+            -MAX_CAMERA_FOV_CHANGE_PER_EVENT,
+            MAX_CAMERA_FOV_CHANGE_PER_EVENT
+        );
+        const nextFov = THREE.MathUtils.clamp(
+            this.camera.fov + fovChange,
+            MIN_CAMERA_FOV,
+            MAX_CAMERA_FOV
+        );
+        if (nextFov !== this.camera.fov) {
+            this.camera.fov = nextFov;
+            this.camera.updateProjectionMatrix();
         }
-        else if (event.deltaY > 0) {
-            this.moveBackward = true;
-            this.stopMovingTime = Date.now() + 100;
-        }
-    
     }
     
     private onPointerMove (event: PointerEvent): any {
@@ -980,6 +1195,33 @@ export class WebDisplay3D implements Display3D
         this.render();
     
     }
+
+    private snapCameraToInitialTarget(target: THREE.Vector3): void {
+        const cameraFollow = this.options.cameraFollow;
+        if (
+            this.options.preview
+            || !this.camera
+            || !cameraFollow?.snapToInitialTarget
+            || this.normalFollowTargetInitialized
+        ) {
+            return;
+        }
+
+        if (cameraFollow.positionDirection) {
+            this.normalFollowPosition.set(...cameraFollow.positionDirection);
+        } else {
+            this.normalFollowPosition.copy(this.camera.position).sub(target);
+        }
+        if (this.normalFollowPosition.lengthSq() === 0) {
+            this.normalFollowPosition.set(1, 1, 1);
+        }
+
+        const followDistance = this.normalFollowDistance * (cameraFollow.distanceMultiplier ?? 1);
+        this.camera.position.copy(this.normalFollowPosition.setLength(followDistance).add(target));
+        this.camera.lookAt(target);
+        this.normalFollowTarget.copy(target);
+        this.normalFollowTargetInitialized = true;
+    }
     
     public center(group: number): void;
     public center(x: number, y: number, z: number): void;
@@ -991,6 +1233,11 @@ export class WebDisplay3D implements Display3D
                 const center = new THREE.Vector3();
                 this.groups[group].mesh.geometry.boundingBox.getCenter(center);
                 this.cameraTarget = center.clone();
+                this.snapCameraToInitialTarget(this.cameraTarget);
+                if (this.options.preview) {
+                    this.normalFollowTarget.copy(this.cameraTarget);
+                    this.normalFollowTargetInitialized = true;
+                }
     
                 const distance = this.cameraTarget.clone().sub( this.camera.position );
                 distance.setLength( 100 * this.cubeSize );
@@ -998,9 +1245,85 @@ export class WebDisplay3D implements Display3D
             }
         }
         else {
-            this.cameraTarget = new THREE.Vector3(x, y, z).multiplyScalar(this.cubeSize).addScalar(this.cubeSize);
+            const target = new THREE.Vector3(x, y, z).multiplyScalar(this.cubeSize).addScalar(this.cubeSize);
+            this.cameraTarget = target;
+            this.snapCameraToInitialTarget(target);
+
+            if (this.options.preview && this.camera) {
+                if (
+                    this.previewCameraInitialized
+                    && this.isTargetWithinFollowFrame(target)
+                ) {
+                    this.normalFollowTarget.copy(target);
+                    this.normalFollowTargetInitialized = true;
+                    return;
+                }
+                this.previewCameraInitialized = true;
+                this.normalFollowTarget.copy(target);
+                this.normalFollowTargetInitialized = true;
+                const viewDirection = this.camera.position.clone().sub(target);
+                if (viewDirection.lengthSq() === 0) {
+                    viewDirection.set(1, 1, 1);
+                }
+                viewDirection.normalize();
+                const previewZoom = Math.max(0.5, Math.min(this.options.previewZoom ?? 1, 4));
+                this.camera.position.copy(target).addScaledVector(viewDirection, this.cubeSize * 10 / previewZoom);
+                this.camera.lookAt(target);
+            }
         }
     
+    }
+
+    private isTargetWithinFollowFrame(target: THREE.Vector3): boolean {
+        this.camera.updateMatrixWorld();
+        const projectedTarget = this.projectedFollowTarget.copy(target).project(this.camera);
+        const safeFrameLimit = 1 - this.followViewportMargin * 2;
+
+        return projectedTarget.z >= -1
+            && projectedTarget.z <= 1
+            && Math.abs(projectedTarget.x) <= safeFrameLimit
+            && Math.abs(projectedTarget.y) <= safeFrameLimit;
+    }
+
+    private updateCameraFollow(delta: number): void {
+        const target = this.cameraTarget;
+        if (!target || !this.camera) {
+            return;
+        }
+
+        if (this.isTargetWithinFollowFrame(target)) {
+            this.normalFollowTarget.copy(target);
+            this.normalFollowTargetInitialized = true;
+            return;
+        }
+
+        if (!this.normalFollowTargetInitialized) {
+            this.normalFollowTarget.copy(target);
+            this.normalFollowTargetInitialized = true;
+        }
+        this.normalFollowTarget.lerp(target, 1 - Math.exp(-8 * delta));
+
+        const cameraFollow = this.options.cameraFollow;
+        if (cameraFollow?.positionDirection) {
+            this.normalFollowPosition.set(...cameraFollow.positionDirection);
+        } else {
+            this.normalFollowPosition.copy(this.camera.position).sub(this.normalFollowTarget);
+        }
+        if (this.normalFollowPosition.lengthSq() === 0) {
+            this.normalFollowPosition.set(1, 1, 1);
+        }
+        const followDistance = this.normalFollowDistance * (cameraFollow?.distanceMultiplier ?? 1);
+        this.normalFollowPosition.setLength(followDistance).add(this.normalFollowTarget);
+
+        const easing = 1 - Math.exp(-5 * delta);
+        this.camera.position.lerp(this.normalFollowPosition, easing);
+
+        this.normalFollowCurrentRotation.copy(this.camera.quaternion);
+        this.camera.lookAt(this.normalFollowTarget);
+        this.normalFollowTargetRotation.copy(this.camera.quaternion);
+        this.camera.quaternion
+            .copy(this.normalFollowCurrentRotation)
+            .slerp(this.normalFollowTargetRotation, 1 - Math.exp(-8 * delta));
     }
     
     animationClock = new THREE.Clock();
@@ -1023,6 +1346,14 @@ export class WebDisplay3D implements Display3D
         }
     
         // move camera towards requested center
+
+        if (
+            this.cameraTarget &&
+            !this.options.preview &&
+            !this.pointerLockControls?.isLocked
+        ) {
+            this.updateCameraFollow(delta);
+        }
     
         if (this.cameraTarget && (performance.now() - this.lastUserInteraction) > this.follow_delay_after_user_move_ms) {
     
@@ -1047,7 +1378,6 @@ export class WebDisplay3D implements Display3D
         this.flyControls?.update(delta);
         this.firstPersonControls?.update(delta);
         this.animatePointerLockControls(delta);
-    
         // Alter selected object
     
         this.highlightSelectedObject();
@@ -1075,7 +1405,9 @@ export class WebDisplay3D implements Display3D
         
         // update stats GUI
     
-        this.stats1.update(undefined, undefined);
+        if (this.simulation.stats) {
+            this.stats1?.update(undefined, undefined);
+        }
     
     }
     
@@ -1099,11 +1431,14 @@ export class WebDisplay3D implements Display3D
     private animatePointerLockControls(delta: number) {
 
         const moveForce = 7500; // change of velocity over time
-        const maxVelocity = 5000;
+        const speedMultiplier = this.moveFast ? 2 : this.moveSlowMode ? 0.25 : 1;
+        const maxVelocity = 5000 * speedMultiplier;
         const friction = 0.99;
     
         const controls = this.pointerLockControls;
-    this.cameraTarget=null;
+        if (this.options.preview) {
+            this.cameraTarget = null;
+        }
         if (!controls) {
             return;
         }
@@ -1121,24 +1456,9 @@ export class WebDisplay3D implements Display3D
             this.velocity.setLength( 0 );
         }
     
-        if (this.cameraTarget) {
-    
-            const currentTarget = controls.getObject().position.clone().addScaledVector( forward, 100 );
-    
-            currentTarget.lerp( this.cameraTarget, delta / 100 );
-            controls.getObject().lookAt( currentTarget );
-    
-        }
-    
         if ( controls.isLocked === true ) {
     
-            const accelerationFactor = moveForce * (this.moveFast ? 2 : 1);
-    
-            if (this.stopMovingTime !== null && Date.now() > this.stopMovingTime)  {
-                this.stopMovingTime = null;
-                this.moveForward = false;
-                this.moveBackward = false;
-            }
+            const accelerationFactor = moveForce * speedMultiplier;
     
             if (this.moveForward) {
                 accelerationVector.addScaledVector( forward, accelerationFactor );
@@ -1171,14 +1491,43 @@ export class WebDisplay3D implements Display3D
     
     }
     
-    previousIntersectObject;
-    wireframeObject;
-    previousIntersectObjectOriginalColor;
+    previousIntersectObject: THREE.Object3D | null = null;
+    wireframeObject: THREE.LineSegments | null = null;
     vertexNormalHelper;
-    
+
+    private setWireframe(mesh: THREE.Mesh, enabled: boolean): boolean {
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        let updated = false;
+
+        for (const material of materials) {
+            if (!isWireframeMaterial(material)) {
+                continue;
+            }
+
+            material.wireframe = enabled;
+            material.needsUpdate = true;
+            updated = true;
+        }
+
+        return updated;
+    }
+
+    private createWireframeOverlay(mesh: THREE.Mesh): void {
+        mesh.updateWorldMatrix(true, false);
+        const geometry = new THREE.EdgesGeometry(mesh.geometry);
+        geometry.applyMatrix4(mesh.matrixWorld);
+
+        this.wireframeObject = new THREE.LineSegments(
+            geometry,
+            new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: false })
+        );
+        this.wireframeObject.renderOrder = 1;
+        this.scene.add(this.wireframeObject);
+    }
+
     private highlightSelectedObject() {
     
-        let intersectObject: THREE.Object3D;
+        let intersectObject: THREE.Object3D | null = null;
     
         if (this.altKey) {
     
@@ -1188,17 +1537,16 @@ export class WebDisplay3D implements Display3D
             // calculate objects intersecting the picking ray
             const intersects = this.raycaster.intersectObjects( this.scene.children );
         
-            let intersectIdx: number;
-            for (intersectIdx = 0; intersectIdx < intersects.length; intersectIdx++) {
-                if (intersects[intersectIdx].object != this.wireframeObject && intersects[intersectIdx].object.visible) break;
-            }
-        
-            intersectObject = intersects[intersectIdx]?.object;
+            intersectObject = intersects.find(({ object }) =>
+                object !== this.wireframeObject && object.visible
+            )?.object ?? null;
         }
     
-        if (this.previousIntersectObject != intersectObject) {
+        if (this.previousIntersectObject !== intersectObject) {
     
-            console.log(`intersect object ${JSON.stringify( intersectObject?.userData )}`);
+            if (intersectObject) {
+                console.log(`intersect object ${JSON.stringify(intersectObject.userData)}`);
+            }
     
             if (this.vertexNormalHelper) {
     
@@ -1214,42 +1562,24 @@ export class WebDisplay3D implements Display3D
     
             }
     
-            const mode = 0;
-            if (mode == 0) {
-    
-                if (this.wireframeObject) {
-                    this.scene.remove(this.wireframeObject);
-                    this.wireframeObject = null;
+            if (this.wireframeObject) {
+                this.scene.remove(this.wireframeObject);
+                this.wireframeObject.geometry.dispose();
+                const materials = Array.isArray(this.wireframeObject.material)
+                    ? this.wireframeObject.material
+                    : [this.wireframeObject.material];
+                for (const material of materials) {
+                    material.dispose();
                 }
-    
-                if (this.previousIntersectObject instanceof THREE.InstancedMesh) {
-                    this.previousIntersectObject.material.wireframe = false;
-                }
-    
-                if (intersectObject instanceof THREE.InstancedMesh) {
-                    intersectObject.material.wireframe = true;
-                }
-                else if (intersectObject instanceof THREE.Mesh && intersectObject.material instanceof THREE.MeshPhongMaterial) {
-                    const geometry = new THREE.EdgesGeometry( intersectObject.geometry );
-                    const material = new THREE.LineBasicMaterial( { color: 0xffffff } );
-                    this.wireframeObject = new THREE.LineSegments( geometry, material );
-                    this.wireframeObject.renderOrder = -1; // before other objects
-                    this.scene.add( this.wireframeObject );
-                }
-            
+                this.wireframeObject = null;
             }
-            else {
-    
-                // put original color back on previous selected object
-                if (this.previousIntersectObject instanceof THREE.Mesh && this.previousIntersectObject.material instanceof THREE.MeshPhongMaterial) {
-                    this.previousIntersectObject.material.color.setHex(this.previousIntersectObjectOriginalColor);
-                }
-        
-                // change color of current selected object
-                if (intersectObject instanceof THREE.Mesh&& intersectObject.material instanceof THREE.MeshPhongMaterial) {
-                    this.previousIntersectObjectOriginalColor = intersectObject.material.color.getHex();
-                    intersectObject.material.color.setHex(Colors.white);
-                }
+
+            if (this.previousIntersectObject instanceof THREE.Mesh) {
+                this.setWireframe(this.previousIntersectObject, false);
+            }
+
+            if (intersectObject instanceof THREE.Mesh && !this.setWireframe(intersectObject, true)) {
+                this.createWireframeOverlay(intersectObject);
             }
             
             this.previousIntersectObject = intersectObject;
@@ -1259,10 +1589,43 @@ export class WebDisplay3D implements Display3D
 
     private render() {
     
-        this.skyboxCamera.rotation.setFromRotationMatrix( new THREE.Matrix4().extractRotation( this.camera.matrixWorld ) );
         this.renderer.clear();
-        this.renderer.render(this.skyboxScene, this.skyboxCamera);
-        this.renderer.render( this.scene, this.camera );
-    
+
+        const overrideMaterial = this.scene.overrideMaterial;
+        if (!overrideMaterial || !this.studioGrid) {
+            this.renderer.render(this.scene, this.camera);
+            return;
+        }
+
+        const simulationObjects = this.groups.reduce<THREE.Object3D[]>((objects, { group, mesh }) => {
+            const object = group ?? mesh;
+            if (object) {
+                objects.push(object);
+            }
+            return objects;
+        }, []);
+        const simulationVisibility = simulationObjects.map((object) => [object, object.visible] as const);
+        const gridVisible = this.studioGrid.visible;
+
+        try {
+            for (const [object] of simulationVisibility) {
+                object.visible = false;
+            }
+            this.scene.overrideMaterial = null;
+            this.renderer.render(this.scene, this.camera);
+
+            for (const [object, visible] of simulationVisibility) {
+                object.visible = visible;
+            }
+            this.studioGrid.visible = false;
+            this.scene.overrideMaterial = overrideMaterial;
+            this.renderer.render(this.scene, this.camera);
+        } finally {
+            for (const [object, visible] of simulationVisibility) {
+                object.visible = visible;
+            }
+            this.studioGrid.visible = gridVisible;
+            this.scene.overrideMaterial = overrideMaterial;
+        }
     }
 }

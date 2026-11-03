@@ -6,6 +6,10 @@ export type Status = {
     part2: number;
 }
 
+export const config = {
+    type: "2D"
+};
+
 interface PositionAndDirection {
     coords: Vector,
     direction: number
@@ -136,8 +140,14 @@ export class AOC {
 
         this.display
             .init(99)
+            .setLayer(0, "Map")
+            .setLayer(3, "Walker position")
             .setItems(this.map.map((v, y) => ({x: v.start, y, content: v.terrain})))
-            .throttle();
+            .fitBounds({
+                min: { x: this.start.coords.x - 10, y: this.start.coords.y - 10 },
+                max: { x: this.start.coords.x + 11, y: this.start.coords.y + 11 }
+            })
+            .checkpoint();
 
         const pos = await this.followPath({...this.start});
 
@@ -275,7 +285,7 @@ export class AOC {
                 await this.display
                     .setItems([{...pos.coords, content: " "}], 3)
                     .scrollIntoView(pos.coords, false)
-                    .throttle();
+                    .checkpoint();
 
             }
         }
