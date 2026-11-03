@@ -1,23 +1,28 @@
-import * as fs from "fs/promises"
-import * as path from "path";
-import * as url from 'url';
+export type Status = {
+    part1: number;
+    part2: number;
+}
 
-type Status = {
+type Accumulator = {
     bestCalories: number[];
     currentCalories: number;
 }
 
-class AOC
-{
-    static Run(lines: string[]): Status
-    {
-        const status = lines.reduce<Status>((prev, current) => {
+export class AOC {
+
+    async Run(lines: string[]): Promise<Status> {
+
+        const flush = (acc: Accumulator) => {
+            if (acc.currentCalories > acc.bestCalories[0]) {
+                acc.bestCalories[0] = acc.currentCalories;
+                acc.bestCalories.sort((a, b) => a - b);
+            }
+            acc.currentCalories = 0;
+        };
+
+        const accumulator = lines.reduce<Accumulator>((prev, current) => {
             if (current == "") {
-                if (prev.currentCalories > prev.bestCalories[0]) {
-                    prev.bestCalories[0] = prev.currentCalories;
-                    prev.bestCalories.sort((a, b) => a - b);
-                }
-                prev.currentCalories = 0;
+                flush(prev);
             }
             else {
                 prev.currentCalories += parseInt(current);
@@ -29,10 +34,11 @@ class AOC
                 bestCalories: [0, 0, 0],
                 currentCalories: 0
             });
+        flush(accumulator); // account for the last elf when input has no trailing blank line
 
-        console.log("part1:", status.bestCalories[2]);
-        console.log("part2:", status.bestCalories.reduce((p, c) => p + c, 0));
-
-        return status;
+        return {
+            part1: accumulator.bestCalories[2],
+            part2: accumulator.bestCalories.reduce((p, c) => p + c, 0)
+        };
     }
 }

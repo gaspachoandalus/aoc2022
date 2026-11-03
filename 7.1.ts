@@ -1,13 +1,3 @@
-import * as fs from "fs/promises"
-
-class Input {
-    static async Read(): Promise<string[]> {
-        const buffer = await fs.readFile("./input.txt");
-        const lines = buffer.toString("utf-8").split("\n");
-        return lines;
-    }
-}
-
 type Status = {
     result: number;
 }
@@ -17,7 +7,7 @@ type Folder = {
     subFolders: Map<string, Folder>;
 }
 
-class Problem {
+export class Problem {
     static stacks: Array<Array<string>> = [];
     static fileSystem: Folder = { filesSize: 0, subFolders: new Map() }
     static line = 0;
@@ -93,7 +83,3 @@ class Problem {
         return totalSize;
     }
 }
-
-const lines = await Input.Read();
-const status = Problem.Run(lines);
-console.log(status);

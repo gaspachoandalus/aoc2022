@@ -1,19 +1,9 @@
-import * as fs from "fs/promises"
-
-class Input {
-    static async Read(): Promise<string[]> {
-        const buffer = await fs.readFile("./input.txt");
-        const lines = buffer.toString("utf-8").split("\n");
-        return lines;
-    }
-}
-
 type Status = {
     result: number;
     sequence: string;
 }
 
-class Problem {
+export class Problem {
     static stacks: Array<Array<string>> = [];
     static line = 0;
 
@@ -51,7 +41,3 @@ class Problem {
         return true;
     }
 }
-
-const lines = await Input.Read();
-const status = Problem.Run(lines);
-console.log(status);

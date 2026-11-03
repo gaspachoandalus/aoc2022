@@ -1,14 +1,3 @@
-import * as fs from "fs/promises"
-
-class Input {
-    static async Read(): Promise<string[]>
-    {
-        const buffer = await fs.readFile("./input.txt");
-        const lines = buffer.toString("utf-8").split("\n");
-        return lines;        
-    }
-}
-
 type Status = {
     score: number;
 }
@@ -66,6 +55,4 @@ class Game
     }
 }
 
-const lines = await Input.Read();
-const status = Game.Run(lines);
-console.log(status.score);
+export { Game as Problem };

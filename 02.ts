@@ -1,7 +1,3 @@
-import * as fs from "fs/promises"
-import * as path from "path";
-import * as url from 'url';
-
 const enum Shapes {
     Rock = 0,
     Paper = 1,
@@ -31,7 +27,7 @@ type Status = {
     part2: number;
 }
 
-class AOC
+export class AOC
 {
     static Run(lines: string[]): Status
     {

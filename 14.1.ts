@@ -1,17 +1,3 @@
-import * as fs from "fs/promises"
-
-export class Input {
-
-    static async ReadAll(): Promise<string> {
-        const buffer = await fs.readFile("./input.txt");
-        return buffer.toString("utf-8");
-    }
-
-    static async ReadLines(): Promise<string[]> {
-        return (await this.ReadAll()).split("\n");
-    }
-}
-
 export type Status = {
     part1: number;
     part2: number;
@@ -125,7 +111,3 @@ export class Problem {
         return `${pos.x},${pos.y}`;
     }
 }
-
-const lines = await Input.ReadLines();
-const status = Problem.Run(lines);
-console.log(status);

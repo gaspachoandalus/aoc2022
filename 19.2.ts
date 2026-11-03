@@ -1,24 +1,5 @@
-import { assert } from "console";
-import * as fs from "fs/promises"
-import { addListener } from "process";
-
-const INPUT = "./input.txt";
-// const INPUT = "./testInput.txt";
-
 const MINUTES = 32;
 // const MINUTES = 24;
-
-export class Input {
-
-    static async ReadAll(): Promise<string> {
-        const buffer = await fs.readFile(INPUT);
-        return buffer.toString("utf-8");
-    }
-
-    static async ReadLines(): Promise<string[]> {
-        return (await this.ReadAll()).split("\n");
-    }
-}
 
 export type Status = {
     part1: number;
@@ -169,7 +150,7 @@ export class Problem {
 
     static explore(blueprint: Blueprint, minutesLeft: number, robotCount: {ore: number, clay: number, obsidian: number, geode: number}, resources: {ore: number, clay: number, obsidian: number, geode: number}, robotsNeeded: Array<string>, maxResourcesRequiredByRobot: {ore: number, clay: number, obsidian: number}, list: string[]) {
 
-        assert(minutesLeft >= 0);
+        console.assert(minutesLeft >= 0);
 
         if (minutesLeft == 0) {
             if (resources.geode > this.best.geodes) {
@@ -269,7 +250,7 @@ export class Problem {
                 }
                 actions.push(action);
                 newMinutesLeft -= (delay - 1);
-                assert(newMinutesLeft > 0);
+                console.assert(newMinutesLeft > 0);
             }
 
             action = `${MINUTES - newMinutesLeft + 1}`;
@@ -280,9 +261,9 @@ export class Problem {
                 newResources.ore -= robotBlueprint.ore;
                 newResources.clay -= robotBlueprint.clay;
                 newResources.obsidian -= robotBlueprint.obsidian;
-                assert(newResources.ore >= 0);
-                assert(newResources.clay >= 0);
-                assert(newResources.obsidian >= 0);
+                console.assert(newResources.ore >= 0);
+                console.assert(newResources.clay >= 0);
+                console.assert(newResources.obsidian >= 0);
 
                 // create robot
                 futureRobotCount = {...robotCount};
@@ -292,7 +273,7 @@ export class Problem {
 
                 if(robotType != "geode" && robotCount[robotType] >= maxResourcesRequiredByRobot[robotType]) {
                     const index = newRobotsNeeded.findIndex(v => v == robotType);
-                    assert(index >= 0);
+                    console.assert(index >= 0);
                     newRobotsNeeded.splice(index, 1);
                     action += `; ${robotType} not needed`;
                 }
@@ -310,7 +291,7 @@ export class Problem {
 
             // next
             list.push(...actions);
-            assert(newRobotsNeeded.length >= 1);
+            console.assert(newRobotsNeeded.length >= 1);
             this.explore(blueprint, newMinutesLeft - 1, futureRobotCount, newResources, newRobotsNeeded, maxResourcesRequiredByRobot, list);
             list.splice(-actions.length, actions.length);
         }
@@ -320,7 +301,3 @@ export class Problem {
         return `${pos.x},${pos.y}`;
     }
 }
-
-const lines = await Input.ReadLines();
-const status = Problem.Run(lines);
-console.log(status);

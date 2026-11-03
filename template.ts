@@ -1,6 +1,3 @@
-import * as fs from "fs/promises"
-import * as path from "path";
-import * as url from 'url';
 import { Vector, moves, distance, vectorAsString, mod } from "./utils/vector.js";
 
 export type Status = {

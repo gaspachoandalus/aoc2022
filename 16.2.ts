@@ -1,24 +1,5 @@
-import { notEqual } from "assert";
-import * as fs from "fs/promises"
-
-// const INPUT = "./testInput.txt";
-const INPUT = "./input.txt";
-
-
 const NB_MINUTES = 26;
 // const NB_MINUTES = 30;
-
-export class Input {
-
-    static async ReadAll(): Promise<string> {
-        const buffer = await fs.readFile(INPUT);
-        return buffer.toString("utf-8");
-    }
-
-    static async ReadLines(): Promise<string[]> {
-        return (await this.ReadAll()).split("\n");
-    }
-}
 
 export type Status = {
     part1: number;
@@ -140,6 +121,9 @@ export class Problem {
     }
 
     static async display() {
+        if (typeof window !== "undefined") return;
+        const fs = await import("fs/promises");
+
         let data = "stateDiagram-v2\n";
         data += "    [*] --> AA\n";
         for (const name of this.simplified) {
@@ -261,7 +245,3 @@ export class Problem {
         return `${pos.x},${pos.y}`;
     }
 }
-
-const lines = await Input.ReadLines();
-const status = await Problem.Run(lines);
-console.log(status);

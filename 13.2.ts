@@ -1,17 +1,3 @@
-import * as fs from "fs/promises"
-
-export class Input {
-
-    static async ReadAll(): Promise<string> {
-        const buffer = await fs.readFile("./input.txt");
-        return buffer.toString("utf-8");
-    }
-
-    static async ReadLines(): Promise<string[]> {
-        return (await this.ReadAll()).split("\n");
-    }
-}
-
 export type Status = {
     part1: number;
     part2: number;
@@ -33,8 +19,9 @@ type RecursiveArray = Array<number|RecursiveArray>;
     
 export class Problem {
 
-    static Run(content: string): Status | undefined {
+    static Run(lines: string[]): Status | undefined {
 
+        const content = lines.join("\n");
         let packets: Array<RecursiveArray> = content.split("\n")
             .reduce((p, line) => {
                 if (line == "") return p;
@@ -129,7 +116,3 @@ export class Problem {
         return `${pos.x},${pos.y}`;
     }
 }
-
-const lines = await Input.ReadAll();
-const status = Problem.Run(lines);
-console.log(status);

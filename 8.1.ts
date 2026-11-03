@@ -1,23 +1,14 @@
-import * as fs from "fs/promises"
-
-class Input {
-    static async Read(): Promise<string[]> {
-        const buffer = await fs.readFile("./input.txt");
-        const lines = buffer.toString("utf-8").split("\n");
-        return lines;
-    }
-}
-
 type Status = {
     result: number;
 }
 
 
-class Problem {
+export class Problem {
     static line = 0;
     static width = 0;
     static height = 0;
     static visible: Map<string, boolean> = new Map();
+    static forest: string[] = [];
 
     static Run(lines: string[]): Status | undefined {
 
@@ -68,15 +59,12 @@ class Problem {
     }
 
     private static getTree(x: number, y: number): number {
-        return parseInt(lines[y][x]);
+        return parseInt(this.forest[y][x]);
     }
 
     private static ParseLines(lines: string[]) {
+        Problem.forest = lines;
         Problem.width = lines[0].length;
-        Problem.height = lines.length;
+        Problem.height = Problem.forest.length;
     }
 }
-
-const lines = await Input.Read();
-const status = Problem.Run(lines);
-console.log(status);

@@ -17,6 +17,7 @@
         "incremental": true,
         "sourceRoot": ".",
         "allowJs": false,
+        "strict": false,
         "paths": {
             // "dat.gui": [ "./node_modules/dat.gui/build/dat.gui.module" ],
             "lil.gui": [

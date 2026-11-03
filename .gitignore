@@ -1,6 +1,8 @@
 previous/
 node_modules/
 /dist/
+/*.in
+/*.ex
 .DS_Store
 .vscode/
 /test-results/

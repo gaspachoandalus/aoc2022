@@ -1,14 +1,3 @@
-import * as fs from "fs/promises"
-
-class Input {
-    static async Read(): Promise<string[]>
-    {
-        const buffer = await fs.readFile("./input.txt");
-        const lines = buffer.toString("utf-8").split("\n");
-        return lines;        
-    }
-}
-
 enum Shapes {
     Rock = 0,
     Paper = 1,
@@ -21,20 +10,20 @@ enum Target {
     Win = 2
 }
 
-type Status = {
+export type Status = {
     score: number;
 }
 
-class Game
+export class AOC
 {
     static Run(lines: string[]): Status
     {
         return lines.reduce<Status>((prev, current) => {
-            const { rucksack1, rucksack2 } = Game.ParseLine(current);
+            const { rucksack1, rucksack2 } = AOC.ParseLine(current);
 
             for (const item of rucksack1.split("")) {
                 if (rucksack2.indexOf(item) >= 0) {
-                    prev.score += Game.ItemScore(item);
+                    prev.score += AOC.ItemScore(item);
                     break;
                 }
             }
@@ -62,7 +51,3 @@ class Game
         }
     }
 }
-
-const lines = await Input.Read();
-const status = Game.Run(lines);
-console.log(status.score);

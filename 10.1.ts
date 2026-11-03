@@ -1,13 +1,4 @@
-import * as fs from "fs/promises"
 import { stringify } from "querystring";
-
-export class Input {
-    static async Read(): Promise<string[]> {
-        const buffer = await fs.readFile("./input.txt");
-        const lines = buffer.toString("utf-8").split("\n");
-        return lines;
-    }
-}
 
 export type Status = {
     result: number;
@@ -121,7 +112,3 @@ export class Problem {
         }
     }
 }
-
-const lines = await Input.Read();
-const status = Problem.Run(lines);
-console.log(status);

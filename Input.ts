@@ -1,4 +1,14 @@
 
+import { readPuzzleInput } from "./utils/PuzzleInput.js";
+
+function splitInputLines(text: string): string[] {
+    const lines = text.split(/\r\n|\n/);
+    if (lines.length > 1 && lines[lines.length - 1] === "") {
+        lines.pop();
+    }
+    return lines;
+}
+
 export class Input {
     static async ReadLines(moduleName: string): Promise<string[]> {
         if (typeof window === 'undefined') {
@@ -8,9 +18,14 @@ export class Input {
             // const filename = url.fileURLToPath(import.meta.url);
             // var scriptNumber = path.basename(filename).split('.').slice(0, -1).join('.').match(/\d+/);
             const buffer = await fs.readFile(moduleName + ".in");
-            return buffer.toString("utf-8").split("\n");
+            return splitInputLines(buffer.toString("utf-8"));
         }
         else {
+            const savedInput = readPuzzleInput(moduleName);
+            if (savedInput !== null) {
+                return splitInputLines(savedInput);
+            }
+
             return fetch(`./${moduleName}.in`)
                 .catch((reason: any) => {
                     console.error("");
@@ -21,7 +36,7 @@ export class Input {
                         return [];
                     }
                     const text = await value.text();
-                    return text.split("\n");
+                    return splitInputLines(text);
                 });
         }
     }

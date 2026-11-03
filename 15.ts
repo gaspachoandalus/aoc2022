@@ -1,8 +1,4 @@
-import * as fs from "fs/promises"
-import * as path from "path";
-import * as url from 'url';
-import { Vector, moves, distance, vectorAsString, mod, display, sleep } from "./utils/vector.js";
-import { Terminal } from "./utils/DisplayTerminal2D.js";
+import type { Vector } from "./utils/vector.js";
 
 const MIN_COORDS = 0;
 const MAX_COORDS = 4_000_000
@@ -157,6 +153,9 @@ export class AOC {
 
     static async saveMapAsSVG()
     {
+        if (typeof window !== "undefined") return;
+        const fs = await import("fs/promises");
+
         let svg = `<svg viewBox="${this.bounds1.min.x} ${this.bounds1.min.y} ${this.bounds1.max.x - this.bounds1.min.x} ${this.bounds1.max.y - this.bounds1.min.y}" xmlns="http://www.w3.org/2000/svg">`;
         // this.measures.map(v => `<circle cx="${v.sensor.x}" cy="${v.sensor.y}" r="${v.distance}"/>`).forEach(v => console.log(v));
         

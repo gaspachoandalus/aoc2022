@@ -1,25 +1,8 @@
-import { cp } from "fs";
-import * as fs from "fs/promises"
-
-// const INPUT = "./testInput.txt";
-const INPUT = "./17.in";
 const COUNT = 1_000_000_000_000;
 const KEEP_LINES = 30;
 
 const WIDTH = 7;
-const debug = !!process.env.DEBUG || false;
-
-export class Input {
-
-    static async ReadAll(): Promise<string> {
-        const buffer = await fs.readFile(INPUT);
-        return buffer.toString("utf-8");
-    }
-
-    static async ReadLines(): Promise<string[]> {
-        return (await this.ReadAll()).split("\n");
-    }
-}
+const debug = typeof process !== "undefined" && Boolean(process.env.DEBUG);
 
 export type Status = {
     part1: number;
@@ -345,7 +328,3 @@ line 3219 ! 1111  !  2081
         return `${pos.x},${pos.y}`;
     }
 }
-
-const lines = await Input.ReadLines();
-const status = Problem.Run(lines);
-console.log(status);

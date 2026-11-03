@@ -24,11 +24,14 @@
     "typescript": "^4"
   },
   "scripts": {
-    "build": "tsc && npx copyfiles \"main.html\" \"dist/\" && npx copyfiles -f \"node_modules/lil-gui/dist/*\" \"dist/lil-gui\" && npx copyfiles -f \"*.in\" \"dist/\"",
+    "build": "tsc && npx copyfiles \"main.html\" \"index.html\" \"dist/\" && node build/generate-day-selector.mjs && npx copyfiles -f \"node_modules/lil-gui/dist/*\" \"dist/lil-gui\" && node build/copy-web-assets.mjs",
     "dev": "npm run build && run-p -sl serve watch",
     "test": "playwright test",
-    "watch": "tsc --watch --preserveWatchOutput --pretty",
-    "serve": "npx serve",
+    "previews:generate": "npm run build && node build/generate-previews.mjs && node build/copy-web-assets.mjs",
+    "watch": "run-p -l watch:typescript watch:selector",
+    "watch:typescript": "tsc --watch --preserveWatchOutput --pretty",
+    "watch:selector": "node build/generate-day-selector.mjs --watch",
+    "serve": "npx serve dist",
     "deploy": "npm run build && firebase deploy"
   },
   "imports": {
@@ -36,7 +39,7 @@
   },
   "dependencies": {
     "chalk": "^5.3.0",
-    "terminal-kit": "^3.0.0",
+    "terminal-kit": "3.1.4",
     "tsm": "^2.3.0"
   }
 }
