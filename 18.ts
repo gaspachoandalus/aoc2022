@@ -10,7 +10,6 @@ export type Status = {
 enum groups {
     object = 1,
     air = 2,
-    boiling = 4,
     explore = 5
 };
 
@@ -34,11 +33,6 @@ export class Problem {
         display3D.setStyle(groups.object, {
             name: "object",
             color: Colors.white,
-            transparent: false
-        });
-        display3D.setStyle(groups.boiling, {
-            name: "boiling",
-            color: Colors.red,
             transparent: false
         });
         display3D.start();
@@ -77,55 +71,7 @@ export class Problem {
         const surfaceTouchingAir = this.surfaceTouchingAir();
         console.log("surface part1", surfaceTouchingAir);
 
-        // create air and unvisitedAir map
-        // WebDisplay3D.setText("fill empty space");
-        const air = new Map<string, Vector3D>();
-        const unvisitedAir = new Map<string, Vector3D>();
-        for (let x = this.min.x; x <= this.max.x; x++) {
-            for (let y = this.min.y; y <= this.max.y; y++) {
-                for (let z = this.min.z; z <= this.max.z; z++) {
-                    const pos = {x, y, z};
-                    const strPos = vector3DAsString(pos);
-                    if (!this.cubes.has(strPos)) {
-                        air.set(strPos, pos);
-                        unvisitedAir.set(strPos, pos);
-
-                        // WebDisplay3D.addBlock(pos.x, pos.y, pos.z, groups.air);
-                        // await WebDisplay3D.throttle(0);
-                    }
-                }
-            }
-        }
-
-        console.log("air", air.size);
-        console.log("total", air.size + this.cubes.size);
-
-        let unreachableAirSurface = 0;
-        while (unvisitedAir.size > 0) {
-
-            const [firstValue] = unvisitedAir.values();
-            const viewed = await this.exploreItems(firstValue, air, unvisitedAir);
-
-            console.log("viewed", viewed);
-            console.log("unvisited", unvisitedAir);
-
-            if (!viewed.onBoundary) {
-                unreachableAirSurface += viewed.surface;
-
-                display3D.move(groups.explore, groups.boiling);
-            }
-            else {
-                await display3D.pause();
-                display3D.setStyle(groups.explore, {
-                    transparent: false
-                })
-                display3D.clear(groups.explore);
-                display3D.fadeOut(groups.object, .1);
-            }
-        }
-        console.log("unreachableAirSurface", unreachableAirSurface);
-        
-        const surfacePart2 = surfaceTouchingAir - unreachableAirSurface;
+        const surfacePart2 = await this.floodFill();
 
         return {
             part1: surfaceTouchingAir,
@@ -152,52 +98,41 @@ export class Problem {
         return surface;
     }
 
-    static async exploreItems(pos: Vector3D, items: Map<string, Vector3D>, unvisited: Map<string, Vector3D>) {
-
-        display3D.log(`explore from ${JSON.stringify(pos)}`);
-
-        const list: Array<Vector3D> = [];
-
-        const viewed = new Map<string, Vector3D>();
-        let onBoundary = false;
-
+    static async floodFill(): Promise<number> {
+        const frontier: Array<Vector3D> = [];
+        const visited = new Map<string, Vector3D>();
         let surface = 0;
-        list.push(pos);
 
-        while(list.length) {
-            const item = list.shift(); // take first
+        const first = {x: this.min.x, y: this.min.y, z: this.min.z};
+        frontier.push(first);
 
-            if (!onBoundary) {
-                if (item.x == this.min.x || item.y == this.min.y || item.z == this.min.z ||
-                    item.x == this.max.x || item.y == this.max.y || item.z == this.max.z) {
-                        onBoundary = true;
-                    }
-            }
+        while (frontier.length) {
+            const item = frontier.shift();
+            if (!item) continue;
 
+            visited.set(vector3DAsString(item), item);
             display3D.addBlock(item.x, item.y, item.z, groups.explore);
             await display3D.throttle(1);
-    
-            viewed.set(vector3DAsString(item), item);
-            unvisited.delete(vector3DAsString(item));
 
             for (const move of moves3D) {
-
                 const next = {x: item.x + move.x, y: item.y + move.y, z: item.z + move.z};
                 const strNext = vector3DAsString(next);
 
-                // add to viewed
-                if (items.has(strNext) && !viewed.has(strNext)) {
-                    viewed.set(strNext, next);
-                    list.push(next);
-                }
-
-                // add to surface
-                if (!items.has(strNext)) {
+                if (this.cubes.has(strNext)) {
                     surface++;
+                    continue;
                 }
+                if (next.x < this.min.x || next.x > this.max.x ||
+                    next.y < this.min.y || next.y > this.max.y ||
+                    next.z < this.min.z || next.z > this.max.z) continue;
+                if (visited.has(strNext)) continue;
+                if (frontier.find(_ => _.x == next.x && _.y == next.y && _.z == next.z)) continue;
+
+                frontier.push(next);
             }
         }
 
-        return { viewed, onBoundary, surface };
+        return surface;
     }
+
 }

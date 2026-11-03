@@ -1,128 +1,34 @@
-import * as fs from "fs/promises"
-
-export class Input {
-
-    static async ReadAll(): Promise<string> {
-        const buffer = await fs.readFile("./testInput.txt");
-        return buffer.toString("utf-8");
-    }
-
-    static async ReadLines(): Promise<string[]> {
-        return (await this.ReadAll()).split("\n");
-    }
-}
-
 export type Status = {
     result: number;
 }
 
+type Monkey = {
+    items: number[];
+    operation: (old: number) => number;
+    test: (input: number) => number;
+    nextTrue: number;
+    nextFalse: number;
+    inspections: number;
+};
 export class Problem {
 
-    // static monkeys = [
-    //     {
-    //         items: [ 79, 98 ],
-    //         operation: (old) => old * 19,
-    //         test: (input) => input % 23,
-    //         nextTrue: 2,
-    //         nextFalse: 3,
-    //         inspections: 0
-    //     },
-    //     {
-    //         items: [ 54, 65, 75, 74 ],
-    //         operation: (old) => old + 6,
-    //         test: (input) => input % 19,
-    //         nextTrue: 2,
-    //         nextFalse: 0,
-    //         inspections: 0
-    //     },
-    //     {
-    //         items: [ 79, 60, 97 ],
-    //         operation: (old) => old * old,
-    //         test: (input) => input % 13,
-    //         nextTrue: 1,
-    //         nextFalse: 3,
-    //         inspections: 0
-    //     },
-    //     {
-    //         items: [ 74 ],
-    //         operation: (old) => old + 3,
-    //         test: (input) => input % 17,
-    //         nextTrue: 0,
-    //         nextFalse: 1,
-    //         inspections: 0
-    //     }
-    // ]
+    monkeys = [];
 
-    static monkeys = [
-        {
-            items: [ 93, 54, 69, 66, 71 ],
-            operation: (old) => old * 3,
-            test: (input) => input % 7,
-            nextTrue: 7,
-            nextFalse: 1,
-            inspections: 0
-        },
-        {
-            items: [ 89, 51, 80, 66 ],
-            operation: (old) => old * 17,
-            test: (input) => input % 19,
-            nextTrue: 5,
-            nextFalse: 7,
-            inspections: 0
-        },
-        {
-            items: [ 90, 92, 63, 91, 96, 63, 64 ],
-            operation: (old) =>  old + 1,
-            test: (input) => input % 13,
-            nextTrue: 4,
-            nextFalse: 3,
-            inspections: 0
-        },
-        {
-            items: [  65, 77 ],
-            operation: (old) =>  old + 2,
-            test: (input) => input % 3,
-            nextTrue: 4,
-            nextFalse: 6,
-            inspections: 0
-        },
-        {
-            items: [ 76, 68, 94 ],
-            operation: (old) =>  old * old,
-            test: (input) => input % 2,
-            nextTrue: 0,
-            nextFalse: 6,
-            inspections: 0
-        },
-        {
-            items: [ 86, 65, 66, 97, 73, 83 ],
-            operation: (old) =>  old + 8,
-            test: (input) => input % 11,
-            nextTrue: 2,
-            nextFalse: 3,
-            inspections: 0
-        },
-        {
-            items: [ 78 ],
-            operation: (old) =>  old + 6,
-            test: (input) => input % 17,
-            nextTrue: 0,
-            nextFalse: 1,
-            inspections: 0
-        },
-        {
-            items: [ 89, 57, 59, 61, 87, 55, 55, 88 ],
-            operation: (old) =>  old + 7,
-            test: (input) => input % 5,
-            nextTrue: 2,
-            nextFalse: 5,
-            inspections: 0
+    Run(lines: string[]): Status | undefined {
+
+        /* sample monkey
+        Monkey 0:
+        Starting items: 93, 54, 69, 66, 71
+        Operation: new = old * 3
+        Test: divisible by 7
+        If true: throw to monkey 7
+        If false: throw to monkey 1
+        */
+
+        for (let i = 0; i + 5 < lines.length; i+=7) {
+            const monkey = this.parseMonkey(lines.slice(i, i+6));
+            this.monkeys.push(monkey);
         }
-    ];
-
-    static Run(lines: string): Status | undefined {
-
-        // lines.split("\n\n").map(this.ParseMonkey());
 
         for (let i = 0; i < 20; i++) {
             this.round();
@@ -144,7 +50,30 @@ export class Problem {
         }
     }
 
-    private static round() {
+    private parseMonkey(lines: string[]): Monkey {
+            const monkey: Monkey = {
+                items: [],
+                operation: (old) => old,
+                test: (input) => input,
+                nextTrue: 0,
+                nextFalse: 0,
+                inspections: 0
+            };
+            lines[0].match(/Monkey \d+/);
+            monkey.items = Array.from(lines[1].matchAll(/(\d+)/g)).map(item => parseInt(item[0], 10));
+            const operation = lines[2].match(/Operation: new = (.+)/)[1];
+            monkey.operation = new Function("old", `return ${operation}`) as Monkey["operation"];
+            const divisibleBy = lines[3].match(/Test: divisible by (\d+)/)[1];
+            monkey.test = new Function("input", `return input % ${parseInt(divisibleBy)}`) as Monkey["test"];
+            monkey.nextTrue = parseInt(lines[4].match(/If true: throw to monkey (\d+)/)[1]);
+            monkey.nextFalse = parseInt(lines[5].match(/If false: throw to monkey (\d+)/)[1]);
+
+            console.log(monkey);
+
+            return monkey;
+    }
+
+    private round() {
 
         for (const monkey of this.monkeys) {
 
@@ -162,14 +91,10 @@ export class Problem {
         }
     }
 
-    static display() {
+    display() {
 
         for (let id in this.monkeys) {
             console.log(`monkey ${id}: ${this.monkeys[id].items}`);
         }
     }
 }
-
-const lines = await Input.ReadAll();
-const status = Problem.Run(lines);
-console.log(status);
